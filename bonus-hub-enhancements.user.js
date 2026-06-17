@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [PAK] PSD - Bonus Hub Enhancements
 // @namespace    http://tampermonkey.net/
-// @version      2.5
+// @version      2.6
 // @description  Copy full table (configurable header/footer/apostrophe), cell copy icons, and scroll buttons for Bonus Hub reports
 // @author       Pak
 // @match        https://pon-wpws27/Whds.Dashboard.Web/bonushub/reports*
