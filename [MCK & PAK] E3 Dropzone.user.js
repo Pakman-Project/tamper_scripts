@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [MCK & PAK] E3 Dropzone
 // @namespace    http://tampermonkey.net/
-// @version      4.99999
+// @version      4.9
 // @description  Top-center bar flush to top. ALL/Y/T copy. Toast centered below bar. Auto run+refresh 30m aligned + sheet push + midnight refresh + download log.
 // @author       Pak & Mucek
 // @match        https://pon-wpws27/Whds.Dashboard.Web/e3/dropzone
