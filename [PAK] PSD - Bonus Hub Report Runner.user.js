@@ -1,3 +1,5 @@
+TEST
+
 // ==UserScript==
 // @name         [PAK] PSD - Bonus Hub Report Runner
 // @namespace    http://tampermonkey.net/
