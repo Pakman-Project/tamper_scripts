@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [PAK] PSD - Bonus Hub Report Runner
 // @namespace    http://tampermonkey.net/
-// @version      10.3
-// @description  Open saved reports, run each, save rows to localStorage, copy TSV, download CSV (Combined/Individual/Both), and optionally post each report TSV to its own Google Sheet. Includes unified Auto-RUN Manager with Rolling Mode, Delay, and NEW Rolling Backfill Mode.
+// @version      11.0
+// @description  Open saved reports, run each, save rows to localStorage, copy TSV, download CSV (Combined/Individual/Both), and optionally post each report TSV to its own Google Sheet. Includes unified Auto-RUN Manager with Rolling Mode, Delay, and Rolling Backfill Mode.
 // @author       Pak
 // @match        https://pon-wpws27/Whds.Dashboard.Web/bonushub/reports*
 // @grant        GM_setClipboard
@@ -15,11 +15,18 @@
 (function () {
     'use strict';
 
-    // --- MAIN SCRIPT CONSTANTS ---
-    const STORAGE_KEY = 'pak_bonushub_settings_v7'; // Updated version for Backfill settings
+    // =====================================================================
+    // CONSTANTS & CONFIG
+    // =====================================================================
+
+    const STORAGE_KEY = 'pak_bonushub_settings_v7';
     const REPORT_CACHE_KEY = 'pak_bonushub_available_reports_v1';
     const RUN_DATA_KEY = 'pak_bonushub_run_data_v1';
+    const AUTORUN_STORAGE_KEY = 'pak_autorun_config_v3';
 
+    // Which Google Sheet each report posts to, keyed by report name (case/whitespace
+    // insensitive lookup — see findUrlInMap). A report not present in the active map
+    // still runs and saves locally, it just won't be posted anywhere.
     const REPORT_POST_URLS_WEEKLY = {
         'MPF - PiE': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbzinomH7_XBUrrGr6iYo6jTWY4S8RAa_n9PQ6d9OaEpmrYR4VT5DlZr9koX6z7MxFAu/exec',
         'MPF - E3 Packing': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbx3V8uvu97pz41uGMJC4BOUVN5Lad98AtclbCjUW5VZicKWRgVSL74NoI6cvLkZ1jQ_wg/exec',
@@ -28,14 +35,12 @@
         'MPF - Sorter 6 Packing': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbyYzOGVJpfNHKj4pxAn8wl-BtitA2lkf_f6P_j7CRYbL-0R7KiRXh8i2c78aB2NWfcD/exec'
     };
 
-    // --- URLs for Daily and Rolling Backfill ---
     const REPORT_POST_URLS_DAILY = {
         'MPF - VS Transfer': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbweReN_J5GfBmYARYzwcQUJdKIBm7LlvhDB5ZnQzBQq6n5ItBo5CpOIEeIomooK3PPnzA/exec',
         'MPF - VS Retail': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbweReN_J5GfBmYARYzwcQUJdKIBm7LlvhDB5ZnQzBQq6n5ItBo5CpOIEeIomooK3PPnzA/exec',
         'MPF - VS Online': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbweReN_J5GfBmYARYzwcQUJdKIBm7LlvhDB5ZnQzBQq6n5ItBo5CpOIEeIomooK3PPnzA/exec'
     };
 
-    // --- URLs for Rolling Backfill ---
     const REPORT_POST_URLS_BACKFILL = {
         'D.Analysis - OSR PiE': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbxsmWnQDngC4UeZ9lSSsWL8qiRU8WRnfG5z38R80i_jdBF6TkEE-RirNeeIFdNUe-qD/exec',
         'D.Analysis - OSR Topup': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbxsmWnQDngC4UeZ9lSSsWL8qiRU8WRnfG5z38R80i_jdBF6TkEE-RirNeeIFdNUe-qD/exec',
@@ -56,7 +61,141 @@
     const SETTINGS_OVERLAY_ID = 'pak-bonushub-settings-overlay';
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-        // --- SPA NAVIGATION HANDLING ---
+    const MONTH_LOOKUP = {
+        january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+        july: 6, august: 7, september: 8, october: 9, november: 10, december: 11
+    };
+
+    // =====================================================================
+    // DESIGN SYSTEM (single stylesheet instead of hundreds of inline styles)
+    // =====================================================================
+    // Everything the script renders (toolbar, overlay, settings modal, status
+    // pill) shares these tokens so the UI reads as one consistent product
+    // instead of a pile of ad-hoc dialogs. Nothing here touches the host
+    // page's own styles — it's scoped to elements carrying pak-* classes.
+    GM_addStyle(`
+        .pak-ui, .pak-ui * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+        .pak-ui {
+            --pak-bg: #131316;
+            --pak-bg-card: #1b1b20;
+            --pak-bg-input: #0f0f12;
+            --pak-border: rgba(255,255,255,0.09);
+            --pak-border-strong: rgba(255,255,255,0.18);
+            --pak-text: #f5f5f7;
+            --pak-text-dim: rgba(245,245,247,0.68);
+            --pak-text-faint: rgba(245,245,247,0.45);
+            --pak-accent: #6d6dfb;
+            --pak-accent-hover: #8484ff;
+            --pak-green: #22c55e;
+            --pak-red: #ef4444;
+            --pak-radius-lg: 16px;
+            --pak-radius: 10px;
+            --pak-radius-sm: 7px;
+        }
+
+        /* --- Toolbar (RUN / Settings) --- */
+        .pak-toolbar { position: fixed; top: 10px; left: 410px; z-index: 99998; display: flex; gap: 6px; align-items: center; padding: 4px; background: rgba(19,19,22,0.85); border: 1px solid var(--pak-border); border-radius: 999px; box-shadow: 0 6px 18px rgba(0,0,0,0.35); backdrop-filter: blur(6px); }
+        .pak-btn { appearance: none; border: 1px solid var(--pak-border-strong); background: #202024; color: var(--pak-text); padding: 8px 16px; border-radius: 999px; font-size: 13px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; transition: background 0.15s, opacity 0.15s, transform 0.05s; white-space: nowrap; }
+        .pak-btn:hover { background: #2a2a30; }
+        .pak-btn:active { transform: scale(0.97); }
+        .pak-btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+        .pak-btn-primary { background: linear-gradient(135deg, var(--pak-accent), #4f46e5); border-color: transparent; }
+        .pak-btn-primary:hover { background: linear-gradient(135deg, var(--pak-accent-hover), #5b52e8); }
+
+        /* --- Status pill (auto-run indicator, bottom-left) --- */
+        .pak-status-pill { position: fixed; bottom: 12px; left: 12px; z-index: 99999; background: rgba(19,19,22,0.92); color: var(--pak-text); border: 1px solid var(--pak-border); border-radius: 999px; padding: 8px 14px; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.4); transition: background 0.15s, border-color 0.15s; }
+        .pak-status-pill:hover { background: rgba(32,32,38,0.95); border-color: var(--pak-border-strong); }
+        .pak-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex-shrink: 0; transition: background 0.2s, box-shadow 0.2s; }
+        .pak-status-text { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--pak-text-dim); }
+
+        /* --- Run overlay --- */
+        .pak-run-overlay { position: fixed; inset: 0; background: rgba(8,8,10,0.78); z-index: 99999; display: none; align-items: center; justify-content: center; user-select: none; }
+        .pak-run-card { width: min(520px, calc(100vw - 32px)); padding: 30px 26px 24px; border-radius: var(--pak-radius-lg); background: var(--pak-bg-card); box-shadow: 0 20px 55px rgba(0,0,0,0.5); border: 1px solid var(--pak-border); text-align: center; color: var(--pak-text); }
+        .pak-run-icon { font-size: 50px; color: var(--pak-accent-hover); margin-bottom: 12px; display: inline-block; animation: pakPinPulse 1.15s ease-in-out infinite; transform-origin: 50% 72%; }
+        .pak-run-status { font-size: 19px; font-weight: 700; margin-bottom: 8px; }
+        .pak-run-progress { font-size: 13px; font-weight: 500; color: var(--pak-text-dim); min-height: 34px; line-height: 1.45; }
+        .pak-abort-btn { margin-top: 18px; padding: 10px 26px; border-radius: 999px; border: 1px solid rgba(255,90,90,0.4); background: rgba(160,25,25,0.6); color: #fff; cursor: pointer; font-size: 13px; font-weight: 600; transition: background 0.15s, border-color 0.15s; }
+        .pak-abort-btn:hover { background: rgba(200,35,35,0.85); border-color: rgba(255,100,100,0.7); }
+        .pak-abort-btn:disabled { opacity: 0.45; cursor: default; }
+        @keyframes pakPinPulse { 0% { transform: translateY(0) rotate(0deg) scale(1); opacity: .95; } 25% { transform: translateY(-3px) rotate(-8deg) scale(1.03); opacity: 1; } 50% { transform: translateY(0) rotate(0deg) scale(1); opacity: .95; } 75% { transform: translateY(-2px) rotate(8deg) scale(1.03); opacity: 1; } 100% { transform: translateY(0) rotate(0deg) scale(1); opacity: .95; } }
+        @keyframes pakSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+        /* --- Toast --- */
+        .pak-toast { position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%); background: #dc3d3d; color: #fff; padding: 12px 22px; border-radius: 999px; z-index: 200000; font-size: 13px; font-weight: 600; box-shadow: 0 6px 18px rgba(0,0,0,0.4); transition: opacity 0.3s, transform 0.3s; opacity: 0; pointer-events: none; white-space: nowrap; }
+
+        /* --- Settings modal --- */
+        .pak-modal-backdrop { position: fixed; inset: 0; z-index: 100000; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); }
+        .pak-modal { width: min(920px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; background: var(--pak-bg); color: var(--pak-text); border: 1px solid var(--pak-border-strong); border-radius: var(--pak-radius-lg); box-shadow: 0 24px 70px rgba(0,0,0,0.5); padding: 16px 16px 14px; }
+        .pak-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--pak-border); }
+        .pak-modal-title { font-size: 18px; font-weight: 700; }
+        .pak-modal-subtitle { font-size: 11.5px; color: var(--pak-text-faint); margin-top: 3px; }
+        .pak-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: stretch; }
+        .pak-card { height: 100%; display: flex; flex-direction: column; background: var(--pak-bg-card); border: 1px solid var(--pak-border); border-radius: var(--pak-radius); padding: 12px; }
+        .pak-card-title { font-size: 13.5px; font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .pak-card-title-text { display: flex; align-items: center; gap: 6px; }
+        .pak-hint { margin-top: 8px; font-size: 11px; color: var(--pak-text-faint); line-height: 1.4; }
+
+        .pak-help { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 50%; background: rgba(255,255,255,0.1); color: var(--pak-text-dim); font-size: 10px; font-weight: 700; font-style: normal; cursor: help; flex-shrink: 0; }
+        .pak-help:hover { background: var(--pak-accent); color: #fff; }
+
+        .pak-radio-row { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; cursor: pointer; font-size: 13px; }
+        .pak-radio-row input { accent-color: var(--pak-accent); }
+        .pak-field-label { display: block; font-size: 11.5px; color: var(--pak-text-dim); margin-bottom: 4px; }
+        .pak-input, .pak-select { width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: var(--pak-radius-sm); border: 1px solid var(--pak-border-strong); background: var(--pak-bg-input); color: var(--pak-text); outline: none; font-size: 13px; }
+        .pak-input:focus, .pak-select:focus { border-color: var(--pak-accent); }
+        .pak-input-light { background: #fff; color: #111; }
+        .pak-date-grid { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
+        .pak-time-grid { display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+        .pak-switch { position: relative; display: inline-block; width: 32px; height: 18px; flex-shrink: 0; }
+        .pak-switch input { opacity: 0; width: 0; height: 0; }
+        .pak-slider { position: absolute; cursor: pointer; inset: 0; background: #4a4a52; transition: .2s; border-radius: 999px; }
+        .pak-slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 2px; top: 2px; background: #fff; transition: .2s; border-radius: 50%; }
+        .pak-switch input:checked + .pak-slider { background: var(--pak-green); }
+        .pak-switch input:checked + .pak-slider:before { transform: translateX(14px); }
+
+        .pak-hidden { display: none !important; }
+        .pak-dimmed { opacity: 0.4; pointer-events: none; transition: opacity 0.2s; }
+
+        .pak-export-options { display: flex; gap: 14px; font-size: 12px; margin-top: 4px; }
+        .pak-checkbox-row { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+        .pak-checkbox-row input { accent-color: var(--pak-accent); }
+
+        .pak-report-list { position: relative; max-height: 320px; overflow-y: auto; margin-right: -6px; padding-right: 6px; padding-bottom: 4px; }
+        .pak-report-list::-webkit-scrollbar { width: 6px; }
+        .pak-report-list::-webkit-scrollbar-track { background: #222; border-radius: 3px; }
+        .pak-report-list::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
+        .pak-report-list::-webkit-scrollbar-thumb:hover { background: #777; }
+        .pak-report-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+        .pak-report-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--pak-border); border-radius: 8px; background: var(--pak-bg-input); cursor: pointer; min-height: 44px; box-sizing: border-box; }
+        .pak-report-item input { transform: scale(1.05); accent-color: var(--pak-accent); }
+        .pak-report-item-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+        .pak-report-item-title { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+        .pak-report-item-sub { font-size: 10px; color: var(--pak-text-faint); }
+        .pak-loading-row { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 100px; color: var(--pak-text-dim); }
+        .pak-spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.25); border-top-color: #fff; animation: pakSpin 0.85s linear infinite; }
+
+        .pak-modal-footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 14px; }
+        .pak-icon-btn { width: 32px; height: 32px; border-radius: 8px; border: 1px solid #a33; background: #4a0e0e; color: #fff; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: background 0.15s; }
+        .pak-icon-btn:hover { background: #611; }
+        .pak-btn-secondary { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--pak-border-strong); background: #222227; color: #fff; cursor: pointer; font-size: 13px; }
+        .pak-btn-secondary:hover { background: #2a2a30; }
+        .pak-btn-save { padding: 8px 16px; border-radius: 8px; border: 1px solid #2d9c57; background: #0f6b2e; color: #fff; cursor: pointer; font-weight: 700; font-size: 13px; }
+        .pak-btn-save:hover { background: #128036; }
+        .pak-error-line { min-height: 16px; font-size: 12px; color: #ffb4b4; margin-top: 8px; }
+        .pak-mini-btn { padding: 4px 9px; border-radius: 999px; border: 1px solid var(--pak-border-strong); background: #222227; color: #fff; cursor: pointer; font-size: 11px; }
+        .pak-mini-btn:hover { background: #2a2a30; }
+    `);
+
+    // =====================================================================
+    // SPA NAVIGATION HANDLING
+    // =====================================================================
+    // The dashboard is an Angular SPA — moving between tabs/pages never
+    // triggers a real page load, so window "load" fires once and our
+    // floating UI would otherwise stay visible on unrelated pages. We patch
+    // history.pushState/replaceState (the only way Angular's router changes
+    // the URL) so we can show/hide our controls in step with the app.
+
     function isCorrectPage() {
         return window.location.href.includes('/bonushub/reports');
     }
@@ -65,61 +204,50 @@
         try {
             const show = isCorrectPage();
 
-            // Safely hide/show main buttons
             if (typeof controlsContainer !== 'undefined') {
                 controlsContainer.style.display = show ? 'flex' : 'none';
             }
 
-            // Safely hide/show Auto-Run status button
-            const countdownEl = document.getElementById('pak-countdown');
-            if (countdownEl) {
-                const statusBtn = countdownEl.closest('div[style*="position: fixed"]');
-                if (statusBtn) statusBtn.style.display = show ? 'flex' : 'none';
-            }
+            const statusPill = document.getElementById('pak-status-pill');
+            if (statusPill) statusPill.style.display = show ? 'flex' : 'none';
 
-            // Force close modals if leaving the page
+            // Leaving the page mid-flow: force-close any modal/overlay rather
+            // than let it linger over an unrelated screen.
             if (!show) {
                 if (settingsOpen) closeSettingsPanel();
                 if (overlayEl && overlayEl.style.display === 'flex') hideOverlay();
             }
         } catch (e) {
-            // FAIL SILENTLY - Prevents crashing the Angular/SPA router
+            // Never let UI bookkeeping crash Angular's router.
         }
     }
 
-    // Intercept SPA navigation safely
-    (function() {
+    (function interceptSpaNavigation() {
         try {
             const originalPushState = history.pushState;
             const originalReplaceState = history.replaceState;
 
-            history.pushState = function() {
+            history.pushState = function () {
                 originalPushState.apply(this, arguments);
                 updateUIVisibility();
             };
 
-            history.replaceState = function() {
+            history.replaceState = function () {
                 originalReplaceState.apply(this, arguments);
                 updateUIVisibility();
             };
 
-            window.addEventListener('popstate', function() {
-                updateUIVisibility();
-            });
+            window.addEventListener('popstate', updateUIVisibility);
         } catch (e) {
-            // FAIL SILENTLY
+            // Fail silently — worst case the floating UI stays visible.
         }
     })();
 
-    // Run once on initial load
     updateUIVisibility();
 
-    const MONTH_LOOKUP = {
-        january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
-        july: 6, august: 7, september: 8, october: 9, november: 10, december: 11
-    };
-
-    const AUTORUN_STORAGE_KEY = 'pak_autorun_config_v3';
+    // =====================================================================
+    // STATE & SETTINGS
+    // =====================================================================
 
     function todayInputValue() { return formatDateInput(new Date()); }
 
@@ -132,11 +260,12 @@
         hourFrom: '00', minuteFrom: '00', hourTo: '23', minuteTo: '59',
         selectedReports: {},
         exportMode: { combined: true, individual: true },
-        backfillInterval: 15 // New setting
+        backfillInterval: 15
     });
 
     const defaultAutoRunSettings = {
         enabled: false,
+        targetMode: 'native',
         mode: 'time',
         timeMinutes: '1',
         intervalMinutes: 60,
@@ -152,11 +281,7 @@
     let controlsDisabled = false;
     let abortRequested = false;
 
-    let autoRunSettings = JSON.parse(localStorage.getItem(AUTORUN_STORAGE_KEY)) || defaultAutoRunSettings;
-    if (typeof autoRunSettings.intervalStartMode === 'undefined') autoRunSettings.intervalStartMode = 'now';
-    if (typeof autoRunSettings.intervalStartMinute === 'undefined') autoRunSettings.intervalStartMinute = 0;
-    if (typeof autoRunSettings.rollingMinutes === 'undefined') autoRunSettings.rollingMinutes = 15;
-    if (typeof autoRunSettings.rollingDelayMinutes === 'undefined') autoRunSettings.rollingDelayMinutes = 1;
+    let autoRunSettings = Object.assign({}, defaultAutoRunSettings, JSON.parse(localStorage.getItem(AUTORUN_STORAGE_KEY) || 'null') || {});
 
     let nextRunTime = null;
     let schedulerTimeout = null;
@@ -165,19 +290,29 @@
     let overlayEl = null, overlayStatusEl = null, overlayProgressEl = null, overlayAbortBtn = null, originalBodyOverflow = '';
     let settingsModalEl = null, settingsEls = null, settingsOpen = false;
 
-    const controlsContainer = document.createElement('div');
-    Object.assign(controlsContainer.style, { position: 'fixed', top: '10px', left: '410px', zIndex: '99998', display: 'flex', gap: '4px', alignItems: 'center' });
+    // =====================================================================
+    // FLOATING TOOLBAR (RUN / Settings)
+    // =====================================================================
 
-    const runBtn = document.createElement('button'); runBtn.textContent = '▶ RUN';
-    const settingsBtn = document.createElement('button'); settingsBtn.textContent = '⚙ Settings';
-    applyButtonStyle(runBtn); applyButtonStyle(settingsBtn);
-    controlsContainer.appendChild(runBtn); controlsContainer.appendChild(settingsBtn);
+    const controlsContainer = document.createElement('div');
+    controlsContainer.className = 'pak-ui pak-toolbar';
+
+    const runBtn = document.createElement('button');
+    runBtn.className = 'pak-btn pak-btn-primary';
+    runBtn.innerHTML = '<i class="fa-solid fa-play"></i> RUN';
+
+    const settingsBtn = document.createElement('button');
+    settingsBtn.className = 'pak-btn';
+    settingsBtn.innerHTML = '<i class="fa-solid fa-gear"></i> Settings';
+
+    controlsContainer.appendChild(runBtn);
+    controlsContainer.appendChild(settingsBtn);
     document.body.appendChild(controlsContainer);
 
     runBtn.addEventListener('click', runSequence);
     settingsBtn.addEventListener('click', openSettingsPanel);
     ensureFontAwesome(); ensureRunOverlay();
-    createAutoRunStatusButton();
+    createAutoRunStatusPill();
 
     if (!settings.selectedReports || Object.keys(settings.selectedReports).length === 0) {
         const defaults = availableReports.length ? availableReports : reportNamesFallback();
@@ -186,7 +321,12 @@
     }
     init();
 
-    // --- BUTTON POSITIONING LOGIC ---
+    // --- Toolbar positioning ---
+    // The toolbar is anchored just right of the page's own logo, so it has
+    // to be repositioned whenever that logo moves or resizes (window resize,
+    // sidebar collapse, font loading shifting layout, etc). A MutationObserver
+    // on the header plus a slow safety-net interval covers Angular re-renders
+    // without polling every 2 seconds forever like the previous version did.
     function updateButtonPosition() {
         const logo = document.querySelector('.logo');
         if (logo) {
@@ -199,9 +339,19 @@
 
     window.addEventListener('load', updateButtonPosition);
     window.addEventListener('resize', updateButtonPosition);
-    setInterval(updateButtonPosition, 2000);
 
-    // --- MAIN SCRIPT FUNCTIONS ---
+    (function watchLogoPosition() {
+        const header = document.querySelector('header') || document.body;
+        try {
+            const observer = new MutationObserver(() => updateButtonPosition());
+            observer.observe(header, { childList: true, subtree: true, attributes: true });
+        } catch (e) { /* MutationObserver unsupported — fall back to the interval below */ }
+        setInterval(updateButtonPosition, 10000); // safety net for anything the observer misses
+    })();
+
+    // =====================================================================
+    // BOOTSTRAP
+    // =====================================================================
 
     async function init() {
         try {
@@ -211,10 +361,6 @@
             await waitForPageReady();
             updateButtonPosition();
         } catch (err) { console.warn('Init warning:', err); }
-    }
-
-    function applyButtonStyle(button) {
-        Object.assign(button.style, { padding: '10px 14px', background: '#000', color: '#fff', border: '1px solid #b0b0b0', borderRadius: '4px', cursor: 'pointer', fontSize: '14px', fontWeight: '500', userSelect: 'none', boxShadow: '0 2px 6px rgba(0,0,0,0.4)', outline: 'none', whiteSpace: 'nowrap' });
     }
 
     function loadSettings() {
@@ -257,24 +403,8 @@
 
     function persistSettings() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch (err) { console.warn('Failed to persist settings:', err); } }
 
-    function loadStoredReports() {
-        try {
-            const raw = localStorage.getItem(RUN_DATA_KEY);
-            if (!raw) return [];
-            const parsed = JSON.parse(raw);
-            return Array.isArray(parsed) ? parsed : [];
-        } catch (err) {
-            console.warn('Failed to load run data:', err);
-            return [];
-        }
-    }
-
     function persistStoredReports() {
-        try {
-            localStorage.setItem(RUN_DATA_KEY, JSON.stringify(storedReports));
-        } catch (err) {
-            console.warn('Failed to persist run data:', err);
-        }
+        try { localStorage.setItem(RUN_DATA_KEY, JSON.stringify(storedReports)); } catch (err) { console.warn('Failed to persist run data:', err); }
     }
 
     function resetStoredReports() {
@@ -282,10 +412,14 @@
         localStorage.removeItem(RUN_DATA_KEY);
     }
 
+    // =====================================================================
+    // GENERIC UTILITIES
+    // =====================================================================
+
     function clampPad2(value, min, max, fallback) { const n = Number.parseInt(value, 10); if (!Number.isInteger(n) || n < min || n > max) return fallback; return String(n).padStart(2, '0'); }
     function pad2(value) { return String(value).padStart(2, '0'); }
     function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
-    function normalizeText(text) { return (text || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim(); }
+    function normalizeText(text) { return (text || '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim(); }
     function normalizeKey(text) { return normalizeText(text).toLowerCase(); }
     function clickElement(el) { if (!el) return false; el.click(); return true; }
 
@@ -298,16 +432,10 @@
 
     function showToast(message) {
         const toast = document.createElement('div');
+        toast.className = 'pak-ui pak-toast';
         toast.textContent = message;
-        Object.assign(toast.style, {
-            position: 'fixed', bottom: '100px', left: '50%', transform: 'translateX(-50%)',
-            background: '#e74c3c', color: '#fff', padding: '12px 24px', borderRadius: '8px',
-            zIndex: '200000', fontSize: '14px', fontWeight: '600', boxShadow: '0 4px 15px rgba(0,0,0,0.4)',
-            transition: 'opacity 0.3s, transform 0.3s', opacity: '0', pointerEvents: 'none',
-            whiteSpace: 'nowrap', fontFamily: 'Arial, sans-serif'
-        });
         document.body.appendChild(toast);
-        toast.offsetHeight;
+        toast.offsetHeight; // force reflow so the transition below actually animates
         toast.style.opacity = '1';
         toast.style.transform = 'translateX(-50%) translateY(-10px)';
 
@@ -325,26 +453,24 @@
         document.head.appendChild(link);
     }
 
+    // =====================================================================
+    // RUN OVERLAY (full-screen progress card shown while a sequence runs)
+    // =====================================================================
+
     function ensureRunOverlay() {
         if (overlayEl) return;
-        overlayEl = document.createElement('div'); overlayEl.id = RUN_OVERLAY_ID;
-        Object.assign(overlayEl.style, { position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.73)', zIndex: '99999', display: 'none', alignItems: 'center', justifyContent: 'center', pointerEvents: 'all', userSelect: 'none' });
+        overlayEl = document.createElement('div');
+        overlayEl.id = RUN_OVERLAY_ID;
+        overlayEl.className = 'pak-ui pak-run-overlay';
         overlayEl.innerHTML = `
-            <div style="width: min(520px, calc(100vw - 32px)); padding: 28px 24px 22px; border-radius: 18px; background: rgba(16,16,16,0.92); box-shadow: 0 18px 50px rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.08); text-align: center; color: #fff; backdrop-filter: blur(2px);">
-                <div style="margin-bottom: 14px;"><i class="fa-solid fa-thumbtack" style="font-size: 54px; color: #ffffff; display: inline-block; animation: pakPinPulse 1.15s ease-in-out infinite; transform-origin: 50% 72%;"></i></div>
-                <div data-status style="font-size: 20px; font-weight: 700; margin-bottom: 10px;">Running...</div>
-                <div data-progress style="font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.88); min-height: 20px; line-height: 1.4;">Preparing...</div>
-                <div style="margin-top: 20px;">
-                    <button data-abort style="padding: 10px 28px; border-radius: 8px; border: 1px solid rgba(255,80,80,0.45); background: rgba(160,25,25,0.65); color: #fff; cursor: pointer; font-size: 14px; font-weight: 600; letter-spacing: 0.3px; transition: background 0.2s, border-color 0.2s;">
-                        <i class="fa-solid fa-stop" style="margin-right: 7px;"></i>Abort &amp; Extract
-                    </button>
+            <div class="pak-run-card">
+                <div><i class="fa-solid fa-thumbtack pak-run-icon"></i></div>
+                <div data-status class="pak-run-status">Running...</div>
+                <div data-progress class="pak-run-progress">Preparing...</div>
+                <div>
+                    <button data-abort class="pak-abort-btn"><i class="fa-solid fa-stop" style="margin-right:7px;"></i>Abort &amp; Extract</button>
                 </div>
             </div>
-            <style>
-                @keyframes pakPinPulse { 0% { transform: translateY(0) rotate(0deg) scale(1); opacity: 0.95; } 25% { transform: translateY(-3px) rotate(-8deg) scale(1.03); opacity: 1; } 50% { transform: translateY(0) rotate(0deg) scale(1); opacity: 0.95; } 75% { transform: translateY(-2px) rotate(8deg) scale(1.03); opacity: 1; } 100% { transform: translateY(0) rotate(0deg) scale(1); opacity: 0.95; } }
-                [data-abort]:hover { background: rgba(200,35,35,0.85) !important; border-color: rgba(255,90,90,0.7) !important; }
-                [data-abort]:active { background: rgba(220,45,45,0.95) !important; }
-            </style>
         `;
         document.body.appendChild(overlayEl);
         overlayStatusEl = overlayEl.querySelector('[data-status]');
@@ -354,8 +480,6 @@
             abortRequested = true;
             setOverlay('Aborting...', 'Finishing current step, then extracting saved data...');
             overlayAbortBtn.disabled = true;
-            overlayAbortBtn.style.opacity = '0.45';
-            overlayAbortBtn.style.cursor = 'default';
         });
     }
 
@@ -365,8 +489,6 @@
         overlayStatusEl.textContent = status; overlayProgressEl.textContent = progress;
         abortRequested = false;
         overlayAbortBtn.disabled = false;
-        overlayAbortBtn.style.opacity = '1';
-        overlayAbortBtn.style.cursor = 'pointer';
         originalBodyOverflow = document.body.style.overflow; document.body.style.overflow = 'hidden'; overlayEl.style.display = 'flex';
     }
 
@@ -375,19 +497,22 @@
 
     function setControlsDisabled(disabled) {
         controlsDisabled = disabled; runBtn.disabled = disabled; settingsBtn.disabled = disabled;
-        const val = disabled ? '0.7' : '1'; const cur = disabled ? 'not-allowed' : 'pointer';
-        runBtn.style.opacity = val; settingsBtn.style.opacity = val; runBtn.style.cursor = cur; settingsBtn.style.cursor = cur;
     }
 
-    function formatDate(date) { const d = new Date(date); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`; }
+    // =====================================================================
+    // DATE / PERIOD HELPERS
+    // =====================================================================
+
+    function formatDate(date) { const d = new Date(date); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`; } // dd/mm/yyyy, matching the site's own date display
     function formatDateInput(date) { const d = new Date(date); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
     function parseDateInput(value) { if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null; const [yyyy, mm, dd] = value.split('-').map(Number); const d = new Date(yyyy, mm - 1, dd); d.setHours(0, 0, 0, 0); if (d.getFullYear() !== yyyy || d.getMonth() !== mm - 1 || d.getDate() !== dd) return null; return d; }
-    function formatToUK(date) { return formatDate(date); }
     function startOfDay(date) { const d = new Date(date); d.setHours(0, 0, 0, 0); return d; }
     function addDays(date, days) { return new Date(date.getTime() + (days * MS_PER_DAY)); }
     function addMinutes(date, mins) { return new Date(date.getTime() + (mins * 60000)); }
     function formatRange(startDate, endDate) { return `${formatDate(startDate)} - ${formatDate(endDate)}`; }
 
+    // Week numbers here are the business's own scheme (anchored to a fixed
+    // Sunday), not ISO-8601 week numbers — don't "fix" this to match ISO.
     function getWeekNumberFromDate(date) { const current = startOfDay(date); const anchor = new Date(2026, 1, 1); anchor.setHours(0, 0, 0, 0); const diffDays = Math.round((current.getTime() - anchor.getTime()) / MS_PER_DAY); return Math.max(1, Math.floor(diffDays / 7) + 1); }
 
     function getMostRecentSunday(date) { const d = new Date(date); d.setHours(12, 0, 0, 0); const day = d.getDay(); const thisSunday = new Date(d); thisSunday.setDate(d.getDate() - day); if (day !== 0) thisSunday.setDate(thisSunday.getDate() - 7); thisSunday.setHours(0, 0, 0, 0); return thisSunday; }
@@ -395,14 +520,15 @@
     function buildPeriods(mode, count, referenceDate = new Date(), fromDateInput = null, toDateInput = null) {
         const periods = []; const today = startOfDay(referenceDate);
 
-        // --- NEW: BACKFILL MODE ---
+        // Rolling Backfill: slice a From/To date+time window into fixed-size
+        // sequential blocks (e.g. every 15 minutes) so a long historical gap
+        // can be backfilled as a series of small, report-sized runs.
         if (mode === 'backfill') {
             const fromDate = fromDateInput instanceof Date ? startOfDay(fromDateInput) : parseDateInput(settings.dailyFromDate);
             const toDate = toDateInput instanceof Date ? startOfDay(toDateInput) : parseDateInput(settings.dailyToDate);
 
             if (!fromDate || !toDate) return [];
 
-            // Combine Dates with the Times configured in settings
             const start = new Date(fromDate);
             start.setHours(parseInt(settings.hourFrom), parseInt(settings.minuteFrom), 0, 0);
 
@@ -419,7 +545,7 @@
 
             while (cursor.getTime() < end.getTime()) {
                 let nextBlock = addMinutes(cursor, interval);
-                if (nextBlock.getTime() > end.getTime()) nextBlock = new Date(end);
+                if (nextBlock.getTime() > end.getTime()) nextBlock = new Date(end); // last block is clipped to the End time, may be shorter than `interval`
 
                 periods.push({
                     startDate: new Date(cursor),
@@ -432,22 +558,35 @@
             }
             return periods;
         }
-        // -----------------------------
 
         if (mode === 'daily') {
             const fromDate = fromDateInput instanceof Date ? startOfDay(fromDateInput) : parseDateInput(settings.dailyFromDate);
             const toDate = toDateInput instanceof Date ? startOfDay(toDateInput) : parseDateInput(settings.dailyToDate);
             if (!fromDate || !toDate || fromDate.getTime() > toDate.getTime()) return [];
             let current = new Date(fromDate);
-            while (current.getTime() <= toDate.getTime()) { const dayStart = new Date(current); periods.push({ startDate: dayStart, endDate: addDays(dayStart,1), label: formatRange(dayStart, addDays(dayStart,1)), weekNumber: getWeekNumberFromDate(dayStart) }); current = addDays(current, 1); }
+            while (current.getTime() <= toDate.getTime()) { const dayStart = new Date(current); periods.push({ startDate: dayStart, endDate: addDays(dayStart, 1), label: formatRange(dayStart, addDays(dayStart, 1)), weekNumber: getWeekNumberFromDate(dayStart) }); current = addDays(current, 1); }
             return periods;
         }
+
+        // Weekly: N complete Sunday-to-Sunday blocks ending at the most
+        // recent Sunday on/before today.
         const n = Math.max(1, Math.min(99, Math.trunc(Number(count) || 1))); const thisSunday = getMostRecentSunday(today);
         for (let i = n; i >= 1; i--) { const startDate = new Date(thisSunday); startDate.setDate(thisSunday.getDate() - (7 * (i - 1))); const endDate = new Date(startDate); endDate.setDate(startDate.getDate() + 7); periods.push({ startDate, endDate, label: formatRange(startDate, endDate), weekNumber: getWeekNumberFromDate(startDate) }); }
         return periods;
     }
 
+    // =====================================================================
+    // ANGULAR MATERIAL FORM AUTOMATION
+    // =====================================================================
+    // Angular Material inputs keep their own internal state; just writing
+    // `.value` doesn't notify the framework. setNativeFieldValue uses the
+    // native property setter (bypassing any overridden setter on the element)
+    // then fires input/change/blur so Angular's change detection picks it up.
+
     function setNativeFieldValue(el, value) { if (!el) return false; const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set; if (setter) setter.call(el, value); else el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); el.dispatchEvent(new Event('blur', { bubbles: true })); return true; }
+    // Used only for the date-range text inputs after we've already driven the
+    // real calendar widget — these are read-only display mirrors, so we set
+    // the visible text without re-triggering Angular's own date parsing.
     function setVisualOnlyValue(el, value) { if (!el) return false; const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set; if (setter) setter.call(el, value); else el.value = value; el.setAttribute('value', value); return true; }
 
     function findFieldContainerByLabel(labelText) { const wanted = normalizeText(labelText).toLowerCase(); const labels = Array.from(document.querySelectorAll('mat-label, label, .mat-mdc-floating-label, .mdc-floating-label')); const label = labels.find(el => normalizeText(el.textContent).toLowerCase() === wanted); return label ? (label.closest('mat-form-field, .mat-mdc-form-field, .mat-form-field') || label.parentElement) : null; }
@@ -461,6 +600,11 @@
     }
 
     async function applyTimeSettingsToScreen() { await setFieldByLabel('Hour From', settings.hourFrom); await setFieldByLabel('Minute From', settings.minuteFrom); await setFieldByLabel('Hour To', settings.hourTo); await setFieldByLabel('Minute To', settings.minuteTo); }
+
+    // --- Calendar (date-range picker) automation ---
+    // The picker only accepts real clicks on its generated day buttons —
+    // there's no form control we can just set a value on — so navigating to
+    // the right month and clicking the right day is simulated end-to-end.
 
     function getVisibleCalendarMonthYear() { const periodButton = document.querySelector('.mat-calendar-period-button'); const text = normalizeText(periodButton?.textContent || ''); const match = text.match(/^([A-Za-z]+)\s+(\d{4})$/); if (!match) return null; const monthIndex = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(match[1].slice(0, 3).toLowerCase()); const year = Number(match[2]); if (monthIndex < 0 || Number.isNaN(year)) return null; return { monthIndex, year }; }
     function clickCalendarPrev() { const btn = document.querySelector('.mat-calendar-previous-button') || document.querySelector('button[aria-label*="Previous month"]'); if (btn) btn.click(); }
@@ -488,12 +632,16 @@
         if (abortRequested) return false;
         if (!await clickCalendarDate(toDate)) { console.warn('❌ Failed selecting end date'); return false; }
         await sleep(150); closeCalendar(); await sleep(120);
-        setVisualOnlyValue(fromInput, formatToUK(fromDate)); setVisualOnlyValue(toInput, formatToUK(toDate));
-        const mirror = document.querySelector('.mat-date-range-input-mirror'); if (mirror) mirror.textContent = `${formatToUK(fromDate)} - ${formatToUK(toDate)}`; return true;
+        setVisualOnlyValue(fromInput, formatDate(fromDate)); setVisualOnlyValue(toInput, formatDate(toDate));
+        const mirror = document.querySelector('.mat-date-range-input-mirror'); if (mirror) mirror.textContent = `${formatDate(fromDate)} - ${formatDate(toDate)}`; return true;
     }
 
+    // =====================================================================
+    // REPORT DISCOVERY & SELECTION
+    // =====================================================================
+
     function readCachedAvailableReports() { try { const raw = localStorage.getItem(REPORT_CACHE_KEY); const parsed = raw ? JSON.parse(raw) : []; return Array.isArray(parsed) ? parsed.filter(Boolean) : []; } catch (_) { return []; } }
-    function cacheAvailableReports(list) { try { localStorage.setItem(REPORT_CACHE_KEY, JSON.stringify(list || [])); } catch (_) {} }
+    function cacheAvailableReports(list) { try { localStorage.setItem(REPORT_CACHE_KEY, JSON.stringify(list || [])); } catch (_) { } }
     function ensureSelectionDefaultsForReports(list) { const current = settings.selectedReports || {}; list.forEach(name => { if (typeof current[name] !== 'boolean') current[name] = true; }); settings.selectedReports = current; persistSettings(); }
     function reportNamesFallback() { return Array.from(new Set([...Object.keys(REPORT_POST_URLS_WEEKLY), ...Object.keys(REPORT_POST_URLS_DAILY), ...Object.keys(REPORT_POST_URLS_BACKFILL)])); }
     function getSelectedReportNames() { const source = availableReports.length ? availableReports : reportNamesFallback(); return source.filter(name => settings.selectedReports[name] !== false); }
@@ -517,14 +665,17 @@
 
     async function clickRun() { const runBtnEl = await waitForElement(() => Array.from(document.querySelectorAll('button, [role="button"], span')).find(el => normalizeText(el.textContent).toUpperCase() === RUN_TEXT || normalizeText(el.textContent).toUpperCase().includes(` ${RUN_TEXT} `)), 20000); if (!runBtnEl) throw new Error('RUN button not found'); clickElement(runBtnEl.closest('button, [role="button"]') || runBtnEl); await sleep(1000); }
 
+    // Waits for the result table to finish streaming in. Angular re-renders
+    // the table multiple times as rows arrive, so grabbing the first render
+    // would often capture a partial result. This waits for the row markup to
+    // stay byte-identical across 3 consecutive checks (1.5s) before trusting
+    // it, and treats an early "0 row(s)" footer with extra suspicion since
+    // that message can appear transiently before real data lands.
     async function waitForTableRows() {
         const tbody = await waitForElement(() => document.querySelector('tbody[role="rowgroup"]'), 120000);
         if (!tbody) throw new Error(abortRequested ? 'Aborted' : 'Result table body not found');
 
-        // === GRACE PERIOD ===
-        // Wait for the table structure to fully render before making any decisions
-        // This prevents false "0 row(s)" detection during initial DOM population
-        await sleep(2000);
+        await sleep(2000); // grace period: let the table structure settle before evaluating it
 
         let lastSignature = '', stableCount = 0, firstRowSeen = false, start = Date.now();
         let zeroRowStableCount = 0;
@@ -538,26 +689,23 @@
 
             if (isZeroRows) {
                 zeroRowStableCount++;
-                // Only trust "0 row(s)" if ALL THREE conditions are met:
-                // 1. We have NEVER seen any rows (firstRowSeen === false)
-                // 2. We've been checking for at least 5 seconds total
-                // 3. The "0 row(s)" message has been STABLE for 3+ consecutive checks (1.5s)
+                // Only trust "0 row(s)" once it's held for 3+ checks, we've
+                // waited 5+ seconds total, and we never saw a row appear.
                 if (!firstRowSeen && (Date.now() - start > 5000) && zeroRowStableCount >= 3) {
                     console.log('[PAK] Confirmed empty table (stable 0 rows after waiting 5+ seconds)');
                     return [];
                 }
             } else {
-                zeroRowStableCount = 0; // Reset counter if footer changes
+                zeroRowStableCount = 0;
             }
 
             if (Date.now() - start > 120000) throw new Error('Result table did not load within 120s');
 
             const rows = Array.from(tbody.querySelectorAll('tr.mat-mdc-row, tr[mat-row]'));
 
-            // Once we see at least one row, we know data is coming
             if (rows.length > 0 && !firstRowSeen) {
                 firstRowSeen = true;
-                start = Date.now(); // Reset timeout - now wait for stability
+                start = Date.now(); // restart the timeout budget — now waiting for stability, not first data
             }
 
             if (firstRowSeen) {
@@ -587,7 +735,7 @@
             const cells = Array.from(row.querySelectorAll('td'));
             const values = cells.map((cell, idx) => {
                 const v = normalizeText(cell.textContent);
-                return (idx === 0 && prefixFirstCol) ? `'${v}` : v;
+                return (idx === 0 && prefixFirstCol) ? `'${v}` : v; // leading apostrophe forces Sheets/Excel to keep e.g. "0123" as text, not a number
             });
             while (values.length < 7) values.push('');
             values.length = 7;
@@ -600,6 +748,10 @@
     function createBlankRow() { return Array(FIXED_COLS).fill(''); }
 
     function buildCombinedRows() { const combined = []; storedReports.forEach((report, index) => { if (index > 0) combined.push(createBlankRow()); report.rows.forEach(row => { const fixedRow = Array.from(row); while (fixedRow.length < FIXED_COLS) fixedRow.push(''); fixedRow.length = FIXED_COLS; combined.push(fixedRow); }); }); return combined; }
+
+    // =====================================================================
+    // EXPORT: CSV / TSV / CLIPBOARD / DOWNLOAD
+    // =====================================================================
 
     function escapeCSV(value) { const text = value == null ? '' : String(value); return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text; }
     function escapeTSV(value) { return String(value == null ? '' : value).replace(/\r?\n/g, ' ').replace(/\t/g, ' '); }
@@ -626,15 +778,23 @@
         setTimeout(() => URL.revokeObjectURL(url), 2000);
     }
 
+    // =====================================================================
+    // GOOGLE SHEETS POSTING
+    // =====================================================================
+
     function postToGoogleSheet(tsvText, webAppUrl) { return new Promise((resolve, reject) => { if (!webAppUrl || !webAppUrl.trim()) { reject(new Error('Google Sheet Web App URL is not set for this report')); return; } GM_xmlhttpRequest({ method: 'POST', url: webAppUrl, timeout: 30000, headers: { 'Content-Type': 'text/plain;charset=utf-8' }, data: tsvText, onload: resp => { (resp.status >= 200 && resp.status < 300) ? resolve(resp.responseText || 'OK') : reject(new Error(`HTTP ${resp.status}: ${resp.responseText}`)); }, onerror: () => reject(new Error('Network error posting to Google Sheets')), ontimeout: () => reject(new Error('Request timeout after 30s')) }); }); }
 
     function findUrlInMap(map, reportName) { const key = normalizeKey(reportName); for (const [name, url] of Object.entries(map)) { if (normalizeKey(name) === key) return url; } return ''; }
     function getPostUrlForReport(reportName) {
         const urlMap = settings.reportMode === 'daily' ? REPORT_POST_URLS_DAILY
-        : settings.reportMode === 'backfill' ? REPORT_POST_URLS_BACKFILL
-        : REPORT_POST_URLS_WEEKLY;
+            : settings.reportMode === 'backfill' ? REPORT_POST_URLS_BACKFILL
+                : REPORT_POST_URLS_WEEKLY;
         return findUrlInMap(urlMap, reportName) || '';
     }
+
+    // =====================================================================
+    // CORE AUTOMATION PIPELINE
+    // =====================================================================
 
     async function processSingleReport(reportName, period, periodIndex, periodTotal, shouldPost) {
         try {
@@ -652,9 +812,8 @@
             await setDateRangeByCalendar(period.startDate, period.endDate);
             if (abortRequested) return;
 
-            // --- MODIFIED TIME SETTING LOGIC ---
-            // If in Backfill mode, use the specific times from the period object.
-            // Otherwise, use the global settings filter times.
+            // Backfill periods carry their own precise start/end minute; every
+            // other mode uses the single Time Range configured in Settings.
             if (settings.reportMode === 'backfill') {
                 await setFieldByLabel('Hour From', period.startDate.getHours());
                 await setFieldByLabel('Minute From', period.startDate.getMinutes());
@@ -663,7 +822,6 @@
             } else {
                 await applyTimeSettingsToScreen();
             }
-            // -----------------------------------
 
             if (abortRequested) return;
 
@@ -679,12 +837,10 @@
             let dataRows = [];
 
             if (rows.length === 0) {
-                // Generate the specific [ EMPTY TABLE ] placeholder row (10 columns total)
                 const emptyRow = ['[ EMPTY TABLE ]', '[ EMPTY TABLE ]', '', '', '', '', ''];
                 emptyRow.push(String(period.weekNumber), period.label, reportName);
                 dataRows = [emptyRow];
             } else {
-                // Standard processing for populated tables
                 const prefixFirstCol = detectFirstColIsBonus();
                 dataRows = rowsToData(rows, period.weekNumber, period.label, reportName, prefixFirstCol);
             }
@@ -717,12 +873,7 @@
         const names = getSelectedReportNames();
         if (!names.length) throw new Error('Please select at least one report in Settings.');
 
-        let periods = [];
-        if (overridePeriods) {
-            periods = overridePeriods;
-        } else {
-            periods = buildPeriods(settings.reportMode, settings.periodCount);
-        }
+        const periods = overridePeriods || buildPeriods(settings.reportMode, settings.periodCount);
 
         if (!periods.length) throw new Error('No periods generated. Check your Date/Time settings.');
         const shouldPost = settings.postEnabled === true;
@@ -755,12 +906,8 @@
                 const groupedData = {};
                 storedReports.forEach((report) => {
                     const name = report.reportName;
-                    if (!groupedData[name]) {
-                        groupedData[name] = [];
-                    }
-                    if (groupedData[name].length > 0) {
-                        groupedData[name].push(createBlankRow());
-                    }
+                    if (!groupedData[name]) groupedData[name] = [];
+                    if (groupedData[name].length > 0) groupedData[name].push(createBlankRow());
                     groupedData[name].push(...report.rows);
                 });
 
@@ -777,8 +924,8 @@
 
         if (aborted) {
             setOverlay('Aborted', successCount > 0
-                       ? `Saved ${successCount} report(s) before abort. Data copied & downloaded.`
-                       : 'Aborted \u2013 no data was collected.');
+                ? `Saved ${successCount} report(s) before abort. Data copied & downloaded.`
+                : 'Aborted – no data was collected.');
             return;
         }
 
@@ -794,8 +941,8 @@
     async function runSequence() {
         if (controlsDisabled) return;
         setControlsDisabled(true);
-        const originalRunText = runBtn.textContent;
-        runBtn.textContent = 'Running...';
+        const originalRunText = runBtn.innerHTML;
+        runBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Running...';
         showOverlay('Running reports...', 'Preparing');
 
         const originalSettings = JSON.parse(JSON.stringify(settings));
@@ -803,7 +950,10 @@
         let manualPeriods = null;
 
         try {
-            // Auto-Run Rolling Logic (Live Mode)
+            // Auto-Run "Rolling" mode overrides the configured period with a
+            // single just-closed interval block (e.g. the last 15 minutes),
+            // computed fresh every time this fires — see calculateNextRun's
+            // rolling branch for how the schedule itself is derived.
             if (autoRunSettings.enabled && autoRunSettings.mode === 'rolling') {
                 isRolling = true;
                 const intervalMins = parseInt(autoRunSettings.rollingMinutes) || 15;
@@ -837,174 +987,155 @@
             if (!(await waitForPageReady())) throw new Error('Page did not finish loading in time.');
             if (!availableReports.length) await loadAvailableReportsAndNormalizeSettings();
 
-            // Pass manualPeriods to processRun (if Rolling AutoRun), else buildPeriods handles Backfill/Weekly/Daily
             await processRun(manualPeriods);
 
-            if (abortRequested) {
-                runBtn.textContent = '⚠ Aborted';
-            } else {
-                runBtn.textContent = '✅ Copied';
-            }
+            runBtn.innerHTML = abortRequested
+                ? '<i class="fa-solid fa-triangle-exclamation"></i> Aborted'
+                : '<i class="fa-solid fa-check"></i> Copied';
         } catch (err) {
             const exportMode = settings.exportMode || { combined: true, individual: true };
 
             if (abortRequested) {
                 if (storedReports.length > 0) {
                     await copyText(buildTSVFromStoredReports());
-                    if (exportMode.combined) {
-                        downloadCSV(buildCSVFromStoredReports());
-                    }
+                    if (exportMode.combined) downloadCSV(buildCSVFromStoredReports());
                 }
                 setOverlay('Aborted', storedReports.length > 0
-                           ? `Saved ${storedReports.length} report(s) before abort. Data copied & downloaded.`
-                           : 'Aborted \u2013 no data was collected.');
-                runBtn.textContent = '⚠ Aborted';
+                    ? `Saved ${storedReports.length} report(s) before abort. Data copied & downloaded.`
+                    : 'Aborted – no data was collected.');
+                runBtn.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Aborted';
             } else {
                 console.error(err);
                 setOverlay('Failed', err.message || 'Sequence failed');
-                runBtn.textContent = '❌ Failed';
+                runBtn.innerHTML = '<i class="fa-solid fa-xmark"></i> Failed';
 
                 if (storedReports.length > 0) {
                     await copyText(buildTSVFromStoredReports());
-                    if (exportMode.combined) {
-                        downloadCSV(buildCSVFromStoredReports());
-                    }
-                    runBtn.textContent = '⚠ Partial';
+                    if (exportMode.combined) downloadCSV(buildCSVFromStoredReports());
+                    runBtn.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Partial';
                 }
 
                 alert(err.message || 'Sequence failed');
             }
         } finally {
-            if (isRolling) {
-                Object.assign(settings, originalSettings);
-            }
+            if (isRolling) Object.assign(settings, originalSettings);
 
             resetStoredReports();
 
             if (autoRunSettings.enabled) {
-                // Auto Run is active — refresh to guarantee a clean SPA state for the next scheduled run
+                // Reload for a clean SPA state before the next scheduled run.
                 setTimeout(() => { location.reload(); }, 2000);
             } else {
-                setTimeout(() => { hideOverlay(); runBtn.textContent = originalRunText; setControlsDisabled(false); }, 1500);
+                setTimeout(() => { hideOverlay(); runBtn.innerHTML = originalRunText; setControlsDisabled(false); }, 1500);
             }
         }
     }
 
-    // --- UNIFIED SETTINGS MODAL ---
+    // =====================================================================
+    // SETTINGS MODAL
+    // =====================================================================
 
     function ensureSettingsModal() {
         if (settingsModalEl) return settingsModalEl;
 
         settingsModalEl = document.createElement('div');
         settingsModalEl.id = SETTINGS_OVERLAY_ID;
-
-        Object.assign(settingsModalEl.style, {
-            position: 'fixed',
-            inset: '0',
-            zIndex: '100000',
-            display: 'none',
-            alignItems: 'center',
-            justifyContent: 'center',
-            background: 'rgba(0,0,0,0.58)',
-            backdropFilter: 'blur(1px)'
-        });
+        settingsModalEl.className = 'pak-ui pak-modal-backdrop';
 
         settingsModalEl.innerHTML = `
-    <div style="width: min(900px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto; background: #111; color: #fff; border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.45); padding: 12px 12px 10px; font-family: Arial, sans-serif;">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom: 8px;">
+    <div class="pak-modal">
+        <div class="pak-modal-head">
             <div>
-                <div style="font-size: 18px; font-weight: 700;">Bonus Hub Settings</div>
-                <div style="font-size: 11px; opacity: 0.8; margin-top: 2px;">Reports, Posting, and Auto-Scheduling Configuration.</div>
+                <div class="pak-modal-title">Bonus Hub Settings</div>
+                <div class="pak-modal-subtitle">Choose a date-range mode, which reports to run, whether to post to Sheets, and (optionally) an unattended schedule.</div>
             </div>
-            <button type="button" data-close style="padding: 6px 10px; border-radius: 6px; border: 1px solid #666; background: #222; color: #fff; cursor: pointer; font-size: 13px;">Close</button>
+            <button type="button" data-close class="pak-btn-secondary">Close</button>
         </div>
 
-        <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: stretch;">
+        <div class="pak-grid">
 
             <!-- COLUMN 1: DATE RANGE MODE -->
-            <div style="height:100%; display:flex; flex-direction:column; background:#171717; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px; box-sizing:border-box;">
-                <div style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Date Range Mode</div>
+            <div class="pak-card">
+                <div class="pak-card-title">
+                    <span class="pak-card-title-text">Date Range Mode</span>
+                </div>
 
-                <label style="display:flex; align-items:center; gap:6px; margin-bottom:6px; cursor:pointer; font-size: 13px;">
+                <label class="pak-radio-row">
                     <input type="radio" name="pak-report-mode" value="weekly" data-report-mode-weekly />
                     <span>Weekly</span>
+                    <i class="pak-help" title="Runs N complete Sunday-to-Sunday weeks, ending on the most recent Sunday.">?</i>
                 </label>
 
-                <label style="display:flex; align-items:center; gap:6px; margin-bottom:6px; cursor:pointer; font-size: 13px;">
+                <label class="pak-radio-row">
                     <input type="radio" name="pak-report-mode" value="daily" data-report-mode-daily />
                     <span>Daily</span>
+                    <i class="pak-help" title="Runs one report per calendar day between two dates you pick.">?</i>
                 </label>
 
-                <!-- NEW: Rolling Backfill Mode -->
-                <label style="display:flex; align-items:center; gap:6px; margin-bottom:6px; cursor:pointer; font-size: 13px;">
+                <label class="pak-radio-row">
                     <input type="radio" name="pak-report-mode" value="backfill" data-report-mode-backfill />
                     <span>Rolling Backfill</span>
+                    <i class="pak-help" title="Slices a date/time window into fixed-size sequential blocks (e.g. every 15 minutes) — for catching up on missed history.">?</i>
                 </label>
 
                 <div data-weekly-count-section>
-                    <label style="display:block; font-size: 12px; margin-bottom: 4px;">
-                        <span data-count-label>Weeks to run</span>
-                    </label>
-                    <input type="number" min="1" max="99" step="1" data-period-count style="width:100%; box-sizing:border-box; padding:8px 10px; border-radius:6px; border:1px solid #555; background:#0f0f0f; color:#fff; outline:none;" />
-                    <div style="margin-top: 8px; font-size: 11px; opacity: 0.8; line-height: 1.35;">Weekly runs complete Sunday-to-Sunday blocks.</div>
+                    <label class="pak-field-label"><span data-count-label>Weeks to run</span></label>
+                    <input type="number" min="1" max="99" step="1" data-period-count class="pak-input" />
+                    <div class="pak-hint">Weekly runs complete Sunday-to-Sunday blocks.</div>
                 </div>
 
-                <!-- SHARED DAILY / BACKFILL SECTIONS -->
-                <div data-daily-range-section style="display:none; margin-top: 8px;">
-                    <div style="display:grid; gap: 8px; grid-template-columns: 1fr 1fr;">
-                        <label style="display:grid; gap: 4px;">
-                            <span class="pak-dyn-label" data-label-from style="font-size: 11px; color: rgba(255,255,255,0.65);">From Date</span>
-                            <input data-daily-from-date type="date" style="width:85%; box-sizing:border-box; border-radius:8px; border:1px solid rgba(255,255,255,0.12); background:#ffffff; color:#111111; padding:8px 5px; outline:none; font-size:13px;" />
+                <div data-daily-range-section class="pak-hidden" style="margin-top: 8px;">
+                    <div class="pak-date-grid">
+                        <label style="display:grid; gap:4px;">
+                            <span class="pak-field-label" data-label-from>From Date</span>
+                            <input data-daily-from-date type="date" class="pak-input pak-input-light" />
                         </label>
-
-                        <label style="display:grid; gap: 4px;">
-                            <span class="pak-dyn-label" data-label-to style="font-size: 11px; color: rgba(255,255,255,0.65);">To Date</span>
-                            <input data-daily-to-date type="date" style="width:85%; box-sizing:border-box; border-radius:8px; border:1px solid rgba(255,255,255,0.12); background:#ffffff; color:#111111; padding:8px 5px; outline:none; font-size:13px;" />
+                        <label style="display:grid; gap:4px;">
+                            <span class="pak-field-label" data-label-to>To Date</span>
+                            <input data-daily-to-date type="date" class="pak-input pak-input-light" />
                         </label>
                     </div>
 
-                    <div id="pak-daily-hint" style="margin-top: 8px; font-size: 11px; opacity: 0.8; line-height: 1.35;">Daily mode uses the exact date range you choose here.</div>
+                    <div id="pak-daily-hint" class="pak-hint">Daily mode uses the exact date range you choose here.</div>
 
-                    <!-- BACKFILL SPECIFIC: Interval Input -->
-                    <div id="pak-backfill-section" style="display:none; margin-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 8px;">
-                        <label style="display:block; font-size: 12px; margin-bottom: 4px;">
+                    <div id="pak-backfill-section" class="pak-hidden" style="margin-top: 12px; border-top: 1px solid var(--pak-border); padding-top: 8px;">
+                        <label class="pak-field-label" style="display:flex; align-items:center; gap:6px;">
                             Interval (Minutes)
+                            <i class="pak-help" title="How long each backfilled block is. A 4-hour window with a 15-minute interval produces 16 sequential reports.">?</i>
                         </label>
-                        <input type="number" min="1" max="1440" step="1" data-backfill-interval style="width:100%; box-sizing:border-box; padding:8px 10px; border-radius:6px; border:1px solid #555; background:#0f0f0f; color:#fff; outline:none;" />
-                        <div style="margin-top: 8px; font-size: 11px; opacity: 0.8; line-height: 1.35;">Generates sequential reports based on the Start and End date/times.</div>
+                        <input type="number" min="1" max="1440" step="1" data-backfill-interval class="pak-input" />
+                        <div class="pak-hint">Generates sequential reports based on the Start and End date/times.</div>
                     </div>
                 </div>
             </div>
 
-            <!-- COLUMN 2: POSTING + EXPORT MODE (SPLIT IN HALF) -->
-            <div style="grid-column: 2 / 3; grid-row: 1; height:100%; display:flex; flex-direction:column; gap:10px; box-sizing:border-box;">
+            <!-- COLUMN 2: POSTING + EXPORT MODE -->
+            <div style="grid-column: 2 / 3; grid-row: 1; height:100%; display:flex; flex-direction:column; gap:10px;">
 
-                <!-- POSTING -->
-                <div style="flex:1; display:flex; flex-direction:column; background:#171717; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px; box-sizing:border-box;">
-                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 6px;">
-                        <div style="font-size: 14px; font-weight: 700;">Posting</div>
-
-                        <label class="pak-switch" style="transform:scale(0.8);">
+                <div class="pak-card" style="flex:1;">
+                    <div class="pak-card-title">
+                        <span class="pak-card-title-text">Posting <i class="pak-help" title="Sends each report's TSV data to its mapped Google Sheet immediately after it finishes running. Reports without a mapping still run and save locally — they just won't post anywhere.">?</i></span>
+                        <label class="pak-switch">
                             <input type="checkbox" id="pak-posting-enabled-check" data-post-enabled>
                             <span class="pak-slider"></span>
                         </label>
                     </div>
-
-                    <div id="pak-posting-controls" style="opacity: 0.4; transition: opacity 0.2s;">
-                        <div style="font-size: 12px; margin-bottom: 4px; color: #fff;">Post to Google Sheets after each report</div>
-                        <div style="font-size: 11px; opacity: 0.8; line-height: 1.35;">Only mapped reports will actually post. Unmapped reports will still run and save.</div>
+                    <div id="pak-posting-controls" class="pak-dimmed">
+                        <div style="font-size: 12px; margin-bottom: 4px;">Post to Google Sheets after each report</div>
+                        <div class="pak-hint">Only mapped reports will actually post. Unmapped reports will still run and save.</div>
                     </div>
                 </div>
 
-                <!-- EXPORT MODE -->
-                <div style="flex:1; display:flex; flex-direction:column; background:#171717; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px; box-sizing:border-box;">
-                    <div style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">Export Mode</div>
-                    <div class="pak-export-options" style="display:flex; gap:12px; font-size:12px; margin-top:4px;">
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                <div class="pak-card" style="flex:1;">
+                    <div class="pak-card-title">
+                        <span class="pak-card-title-text">Export Mode <i class="pak-help" title="Combined = one CSV with every report stacked, separated by blank rows. Individual = one CSV file per report. Both can be on at once.">?</i></span>
+                    </div>
+                    <div class="pak-export-options">
+                        <label class="pak-checkbox-row">
                             <input type="checkbox" name="pak-export-combined" data-export-combined checked>
                             <span>Combined Report</span>
                         </label>
-                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                        <label class="pak-checkbox-row">
                             <input type="checkbox" name="pak-export-individual" data-export-individual checked>
                             <span>Individual Reports</span>
                         </label>
@@ -1013,65 +1144,64 @@
             </div>
 
             <!-- COLUMN 3: AUTO RUN -->
-            <div style="grid-column: 3; grid-row: 1 / span 2; background:#171717; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px; align-self:start;">
-                <div style="font-size: 14px; font-weight: 700; margin-bottom: 8px; display:flex; justify-content:space-between;">
-                    Auto Run
-                    <label class="pak-switch" style="transform:scale(0.8);">
+            <div class="pak-card" style="grid-column: 3; grid-row: 1 / span 2; align-self:start;">
+                <div class="pak-card-title">
+                    <span class="pak-card-title-text">Auto Run <i class="pak-help" title="Runs this script (or the site's native RUN button) on an unattended schedule, with no need to keep clicking RUN yourself.">?</i></span>
+                    <label class="pak-switch">
                         <input type="checkbox" id="pak-autorun-enabled-check">
                         <span class="pak-slider"></span>
                     </label>
                 </div>
 
-                <div id="pak-autorun-controls" style="opacity: 0.4; pointer-events: none; transition: opacity 0.2s;">
-                    <div class="pak-form-group" style="margin-bottom:8px;">
-                        <label class="pak-label" style="font-size:11px; color:#aaa;">Target Action</label>
-                        <select id="pak-autorun-target-select" class="pak-select" style="width:100%; padding:5px; font-size:12px;">
+                <div id="pak-autorun-controls" class="pak-dimmed">
+                    <div style="margin-bottom:8px;">
+                        <label class="pak-field-label" style="display:flex; align-items:center; gap:6px;">Target Action
+                            <i class="pak-help" title="'Current Report' clicks the site's own RUN button on whatever report is on screen. 'All Selected Reports' runs this script's full sequence (Saved Reports list below).">?</i>
+                        </label>
+                        <select id="pak-autorun-target-select" class="pak-select">
                             <option value="native">Current Report (On Screen ONLY)</option>
                             <option value="script">All Selected Reports (Below Selected Saved Reports)</option>
                         </select>
                     </div>
 
-                    <div class="pak-form-group" style="margin-bottom:8px;">
-                        <label class="pak-label" style="font-size:11px; color:#aaa;">Schedule Mode</label>
-                        <select id="pak-autorun-mode-select" class="pak-select" style="width:100%; padding:5px; font-size:12px;">
+                    <div style="margin-bottom:8px;">
+                        <label class="pak-field-label">Schedule Mode</label>
+                        <select id="pak-autorun-mode-select" class="pak-select">
                             <option value="time">Specific Minutes (HH:MM)</option>
                             <option value="interval">Interval (Timer)</option>
                             <option value="rolling">Rolling Interval</option>
                         </select>
                     </div>
 
-                    <!-- SPECIFIC MINUTES SECTION -->
-                    <div id="pak-autorun-section-time" class="pak-section pak-hidden" style="border:none; padding:0; margin:0;">
-                        <label class="pak-label" style="font-size:11px; color:#aaa;">Minutes (e.g. 1, 15, 30)</label>
-                        <input type="text" id="pak-autorun-time-input" class="pak-input" value="1" style="width:100%; padding:5px; font-size:12px;">
+                    <div id="pak-autorun-section-time" class="pak-hidden">
+                        <label class="pak-field-label">Minutes (e.g. 1, 15, 30)</label>
+                        <input type="text" id="pak-autorun-time-input" class="pak-input" value="1">
                     </div>
 
-                    <!-- INTERVAL SECTION -->
-                    <div id="pak-autorun-section-interval" class="pak-section pak-hidden" style="border:none; padding:0; margin:0;">
-                        <div class="pak-form-group" style="margin-bottom:8px;">
-                            <label class="pak-label" style="font-size:11px; color:#aaa;">Interval (Minutes)</label>
-                            <input type="number" id="pak-autorun-interval-input" class="pak-input" value="60" style="width:100%; padding:5px; font-size:12px;">
+                    <div id="pak-autorun-section-interval" class="pak-hidden">
+                        <div style="margin-bottom:8px;">
+                            <label class="pak-field-label">Interval (Minutes)</label>
+                            <input type="number" id="pak-autorun-interval-input" class="pak-input" value="60">
                         </div>
 
-                        <div class="pak-form-group" style="margin-bottom:8px;">
-                            <label class="pak-label" style="font-size:11px; color:#aaa;">Start Strategy</label>
+                        <div style="margin-bottom:8px;">
+                            <label class="pak-field-label">Start Strategy</label>
                             <div style="display:flex; gap:10px; font-size:12px;">
                                 <label><input type="radio" name="pak-autorun-start" value="now" checked> Start Now</label>
                                 <label><input type="radio" name="pak-autorun-start" value="minute"> Specific Minute</label>
                             </div>
                         </div>
 
-                        <div id="pak-autorun-specific-minute-group" class="pak-section pak-hidden" style="margin-bottom:8px; border:none; padding:0;">
-                            <label class="pak-label" style="font-size:11px; color:#aaa;">Start at Minute (0-59)</label>
-                            <input type="number" id="pak-autorun-start-minute-input" min="0" max="59" style="width:100%; padding:5px; font-size:12px; box-sizing:border-box;">
+                        <div id="pak-autorun-specific-minute-group" class="pak-hidden" style="margin-bottom:8px;">
+                            <label class="pak-field-label">Start at Minute (0-59)</label>
+                            <input type="number" id="pak-autorun-start-minute-input" min="0" max="59" class="pak-input">
                         </div>
                     </div>
 
-                    <!-- ROLLING SECTION -->
-                    <div id="pak-autorun-section-rolling" class="pak-section pak-hidden" style="border:none; padding:0; margin:0;">
-                         <div class="pak-form-group" style="margin-bottom:4px;">
-                            <label class="pak-label" style="font-size:11px; color:#aaa;">Rolling Interval</label>
-                            <select id="pak-autorun-rolling-select" class="pak-select" style="width:100%; padding:5px; font-size:12px;">
+                    <div id="pak-autorun-section-rolling" class="pak-hidden">
+                        <div style="margin-bottom:4px;">
+                            <label class="pak-field-label">Rolling Interval</label>
+                            <select id="pak-autorun-rolling-select" class="pak-select">
                                 <option value="5">5 Minutes</option>
                                 <option value="10">10 Minutes</option>
                                 <option value="15" selected>15 Minutes</option>
@@ -1079,9 +1209,11 @@
                                 <option value="60">1 Hour</option>
                             </select>
                         </div>
-                        <div class="pak-form-group" style="margin-top:8px;">
-                            <label class="pak-label" style="font-size:11px; color:#aaa;">Run Delay (Minutes)</label>
-                            <select id="pak-autorun-rolling-delay-select" class="pak-select" style="width:100%; padding:5px; font-size:12px;">
+                        <div style="margin-top:8px;">
+                            <label class="pak-field-label" style="display:flex; align-items:center; gap:6px;">Run Delay (Minutes)
+                                <i class="pak-help" title="Waits this long after a window closes before running, so the source data has time to finalize. E.g. with a 15-min interval and 1-min delay, the 10:45-11:00 window runs at 11:01.">?</i>
+                            </label>
+                            <select id="pak-autorun-rolling-delay-select" class="pak-select">
                                 <option value="1" selected>1 Minute</option>
                                 <option value="2">2 Minutes</option>
                                 <option value="3">3 Minutes</option>
@@ -1099,98 +1231,72 @@
                                 <option value="15">15 Minutes</option>
                             </select>
                         </div>
-                        <div style="font-size: 10px; color: rgba(255,255,255,0.5); line-height: 1.3; margin-top:4px;">
-                            Automatically sets date/today to the last X minutes. <b>Run Delay</b> ensures the script executes after the window closes (e.g. runs at 11:01 for the 10:45-11:00 window).
-                        </div>
+                        <div class="pak-hint">Automatically sets the date/time range to the last X minutes based on the interval above.</div>
                     </div>
                 </div>
             </div>
 
             <!-- TIME RANGE -->
-            <div style="grid-column: 1 / 3; background:#171717; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px;">
-                <div style="font-size: 14px; font-weight: 700; margin-bottom: 8px;" id="pak-time-range-title">Time Range</div>
-                <div style="display:grid; gap:8px; grid-template-columns: repeat(4, minmax(0, 1fr));">
+            <div class="pak-card" style="grid-column: 1 / 3;">
+                <div class="pak-card-title" id="pak-time-range-title">Time Range</div>
+                <div class="pak-time-grid">
                     <label style="display:grid; gap:4px;">
-                        <span class="pak-dyn-label" data-label-hour-from style="font-size:11px; color: rgba(255,255,255,0.65);">Hour From</span>
-                        <input data-hour-from type="number" min="0" max="23" step="1" inputmode="numeric" style="width:100%; box-sizing:border-box; border-radius:8px; border:1px solid rgba(255,255,255,0.12); background:#fff; color:#111; padding:8px; outline:none; font-size:13px;" />
+                        <span class="pak-field-label" data-label-hour-from>Hour From</span>
+                        <input data-hour-from type="number" min="0" max="23" step="1" inputmode="numeric" class="pak-input pak-input-light" />
                     </label>
-
                     <label style="display:grid; gap:4px;">
-                        <span class="pak-dyn-label" data-label-minute-from style="font-size:11px; color: rgba(255,255,255,0.65);">Minute From</span>
-                        <input data-minute-from type="number" min="0" max="59" step="1" inputmode="numeric" style="width:100%; box-sizing:border-box; border-radius:8px; border:1px solid rgba(255,255,255,0.12); background:#fff; color:#111; padding:8px; outline:none; font-size:13px;" />
+                        <span class="pak-field-label" data-label-minute-from>Minute From</span>
+                        <input data-minute-from type="number" min="0" max="59" step="1" inputmode="numeric" class="pak-input pak-input-light" />
                     </label>
-
                     <label style="display:grid; gap:4px;">
-                        <span class="pak-dyn-label" data-label-hour-to style="font-size:11px; color: rgba(255,255,255,0.65);">Hour To</span>
-                        <input data-hour-to type="number" min="0" max="23" step="1" inputmode="numeric" style="width:100%; box-sizing:border-box; border-radius:8px; border:1px solid rgba(255,255,255,0.12); background:#fff; color:#111; padding:8px; outline:none; font-size:13px;" />
+                        <span class="pak-field-label" data-label-hour-to>Hour To</span>
+                        <input data-hour-to type="number" min="0" max="23" step="1" inputmode="numeric" class="pak-input pak-input-light" />
                     </label>
-
                     <label style="display:grid; gap:4px;">
-                        <span class="pak-dyn-label" data-label-minute-to style="font-size:11px; color: rgba(255,255,255,0.65);">Minute To</span>
-                        <input data-minute-to type="number" min="0" max="59" step="1" inputmode="numeric" style="width:100%; box-sizing:border-box; border-radius:8px; border:1px solid rgba(255,255,255,0.12); background:#fff; color:#111; padding:8px; outline:none; font-size:13px;" />
+                        <span class="pak-field-label" data-label-minute-to>Minute To</span>
+                        <input data-minute-to type="number" min="0" max="59" step="1" inputmode="numeric" class="pak-input pak-input-light" />
                     </label>
                 </div>
             </div>
 
             <!-- SAVED REPORTS -->
-            <div style="grid-column: 1 / -1; background:#171717; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px;">
+            <div class="pak-card" style="grid-column: 1 / -1;">
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom: 6px;">
-                    <div style="font-size: 14px; font-weight: 700;">Saved reports</div>
+                    <div class="pak-card-title" style="margin-bottom:0;">Saved reports</div>
                     <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                        <button type="button" data-select-all style="padding:4px 8px; border-radius:6px; border:1px solid #666; background:#222; color:#fff; cursor:pointer; font-size:11px;">Select all</button>
-                        <button type="button" data-select-none style="padding:4px 8px; border-radius:6px; border:1px solid #666; background:#222; color:#fff; cursor:pointer; font-size:11px;">Select none</button>
+                        <button type="button" data-select-all class="pak-mini-btn">Select all</button>
+                        <button type="button" data-select-none class="pak-mini-btn">Select none</button>
                     </div>
                 </div>
 
-                <div style="font-size: 11px; opacity: 0.75; margin-bottom: 6px;">This list refreshes automatically when Settings opens.</div>
+                <div class="pak-hint" style="margin-bottom: 6px;">This list refreshes automatically when Settings opens. Only checked reports run.</div>
 
-                <div data-report-list style="position:relative; max-height: 320px; overflow-y: auto; margin-right: -6px; padding-right: 6px; padding-bottom: 4px;">
-                    <div data-report-loading style="display:flex; align-items:center; justify-content:center; gap:10px; min-height:100px; color: rgba(255,255,255,0.8);">
-                        <div style="width:16px; height:16px; border-radius:50%; border:2px solid rgba(255,255,255,0.25); border-top-color:#fff; animation: pakSpin 0.85s linear infinite;"></div>
+                <div data-report-list class="pak-report-list">
+                    <div data-report-loading class="pak-loading-row">
+                        <div class="pak-spinner"></div>
                         <div style="font-size: 12px;">Loading saved reports...</div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <div data-error style="min-height:16px; font-size:12px; color:#ffb4b4; margin-top:8px;"></div>
+        <div data-error class="pak-error-line"></div>
 
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:12px;">
-            <button type="button" id="pak-clear-data-btn" title="Clear Background Data, click when tab is slowing down" style="width:32px; height:32px; border-radius:8px; border:1px solid #a33; background:#500; color:#fff; cursor:pointer; font-size:14px; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+        <div class="pak-modal-footer">
+            <button type="button" id="pak-clear-data-btn" title="Clear background run data — click if the tab feels slow." class="pak-icon-btn">
                 <i class="fa-solid fa-trash-can"></i>
             </button>
 
             <div style="display:flex; gap:8px;">
-                <button type="button" data-cancel style="padding:8px 12px; border-radius:6px; border:1px solid #666; background:#222; color:#fff; cursor:pointer; font-size:13px;">Cancel</button>
-                <button type="button" data-save style="padding:8px 12px; border-radius:6px; border:1px solid #2d9c57; background:#0f6b2e; color:#fff; cursor:pointer; font-weight:700; font-size:13px;">Save</button>
+                <button type="button" data-cancel class="pak-btn-secondary">Cancel</button>
+                <button type="button" data-save class="pak-btn-save">Save</button>
             </div>
         </div>
     </div>
-
-    <style>
-        @keyframes pakSpin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-        }
-
-        .pak-switch { position: relative; display: inline-block; width: 30px; height: 16px; }
-        .pak-switch input { opacity: 0; width: 0; height: 0; }
-        .pak-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #555; transition: .4s; border-radius: 16px; }
-        .pak-slider:before { position: absolute; content: ""; height: 12px; width: 12px; left: 2px; bottom: 2px; background-color: white; transition: .4s; border-radius: 50%; }
-        input:checked + .pak-slider { background-color: #22c55e; }
-        input:checked + .pak-slider:before { transform: translateX(14px); }
-        .pak-hidden { display: none; }
-
-        [data-report-list]::-webkit-scrollbar { width: 6px; }
-        [data-report-list]::-webkit-scrollbar-track { background: #222; border-radius: 3px; }
-        [data-report-list]::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
-        [data-report-list]::-webkit-scrollbar-thumb:hover { background: #777; }
-    </style>
 `;
 
         document.body.appendChild(settingsModalEl);
 
-        // Main Settings Elements
         settingsEls = {
             overlay: settingsModalEl,
             closeBtn: settingsModalEl.querySelector('[data-close]'),
@@ -1199,11 +1305,11 @@
             postEnabledCheckbox: settingsModalEl.querySelector('[data-post-enabled]'),
             reportModeWeekly: settingsModalEl.querySelector('[data-report-mode-weekly]'),
             reportModeDaily: settingsModalEl.querySelector('[data-report-mode-daily]'),
-            reportModeBackfill: settingsModalEl.querySelector('[data-report-mode-backfill]'), // NEW
+            reportModeBackfill: settingsModalEl.querySelector('[data-report-mode-backfill]'),
             weeklyCountSection: settingsModalEl.querySelector('[data-weekly-count-section]'),
             dailyRangeSection: settingsModalEl.querySelector('[data-daily-range-section]'),
             dailyHint: settingsModalEl.querySelector('#pak-daily-hint'),
-            backfillSection: settingsModalEl.querySelector('#pak-backfill-section'), // NEW
+            backfillSection: settingsModalEl.querySelector('#pak-backfill-section'),
             periodCountInput: settingsModalEl.querySelector('[data-period-count]'),
             countLabel: settingsModalEl.querySelector('[data-count-label]'),
             dailyFromDateInput: settingsModalEl.querySelector('[data-daily-from-date]'),
@@ -1212,7 +1318,7 @@
             minuteFromInput: settingsModalEl.querySelector('[data-minute-from]'),
             hourToInput: settingsModalEl.querySelector('[data-hour-to]'),
             minuteToInput: settingsModalEl.querySelector('[data-minute-to]'),
-            backfillIntervalInput: settingsModalEl.querySelector('[data-backfill-interval]'), // NEW
+            backfillIntervalInput: settingsModalEl.querySelector('[data-backfill-interval]'),
             reportList: settingsModalEl.querySelector('[data-report-list]'),
             selectAllBtn: settingsModalEl.querySelector('[data-select-all]'),
             selectNoneBtn: settingsModalEl.querySelector('[data-select-none]'),
@@ -1222,7 +1328,6 @@
             exportIndividualCheckbox: settingsModalEl.querySelector('[data-export-individual]'),
             postingCheck: settingsModalEl.querySelector('#pak-posting-enabled-check'),
             postingControls: settingsModalEl.querySelector('#pak-posting-controls'),
-            // Dynamic Labels
             labelFromDate: settingsModalEl.querySelector('[data-label-from]'),
             labelToDate: settingsModalEl.querySelector('[data-label-to]'),
             labelHourFrom: settingsModalEl.querySelector('[data-label-hour-from]'),
@@ -1232,7 +1337,6 @@
             timeRangeTitle: settingsModalEl.querySelector('#pak-time-range-title')
         };
 
-        // Auto Run Specific Elements
         const autoRunEls = {
             enabledCheck: settingsModalEl.querySelector('#pak-autorun-enabled-check'),
             controlsDiv: settingsModalEl.querySelector('#pak-autorun-controls'),
@@ -1253,13 +1357,12 @@
 
         // --- Event Listeners ---
 
-        // Main Settings
         settingsEls.closeBtn.addEventListener('click', closeSettingsPanel);
         settingsEls.cancelBtn.addEventListener('click', closeSettingsPanel);
         settingsEls.saveBtn.addEventListener('click', saveSettingsPanel);
         settingsEls.reportModeWeekly.addEventListener('change', onReportModeChanged);
         settingsEls.reportModeDaily.addEventListener('change', onReportModeChanged);
-        settingsEls.reportModeBackfill.addEventListener('change', onReportModeChanged); // NEW
+        settingsEls.reportModeBackfill.addEventListener('change', onReportModeChanged);
         settingsEls.selectAllBtn.addEventListener('click', () => setAllReportSelections(true));
         settingsEls.selectNoneBtn.addEventListener('click', () => setAllReportSelections(false));
         settingsEls.clearDataBtn.addEventListener('click', () => {
@@ -1275,40 +1378,30 @@
             if (e.key === 'Escape' && settingsOpen) closeSettingsPanel();
         });
 
-        // Export Mode Constraint Logic
-        settingsEls.exportCombinedCheckbox.addEventListener('change', function() {
+        // At least one export mode must stay on, otherwise nothing gets saved to disk.
+        settingsEls.exportCombinedCheckbox.addEventListener('change', function () {
             if (!this.checked && !settingsEls.exportIndividualCheckbox.checked) {
                 settingsEls.exportIndividualCheckbox.checked = true;
                 showToast('One export mode must be selected');
             }
         });
 
-        settingsEls.exportIndividualCheckbox.addEventListener('change', function() {
+        settingsEls.exportIndividualCheckbox.addEventListener('change', function () {
             if (!this.checked && !settingsEls.exportCombinedCheckbox.checked) {
                 settingsEls.exportCombinedCheckbox.checked = true;
                 showToast('One export mode must be selected');
             }
         });
 
-        // Auto Run Events
         settingsEls.enabledCheck.addEventListener('change', (e) => {
             const controls = settingsEls.controlsDiv;
             const isEnabled = e.target.checked;
-            if (isEnabled) {
-                controls.style.opacity = '1';
-                controls.style.pointerEvents = 'auto';
-            } else {
-                controls.style.opacity = '0.4';
-                controls.style.pointerEvents = 'none';
-            }
+            controls.classList.toggle('pak-dimmed', !isEnabled);
 
             const mode = settingsEls.modeSelect.value;
-            if (mode === 'rolling') {
-                toggleDateInputsDisabled(isEnabled);
-            }
+            if (mode === 'rolling') toggleDateInputsDisabled(isEnabled);
         });
 
-        // Schedule Mode Toggle
         settingsEls.modeSelect.addEventListener('change', (e) => {
             const mode = e.target.value;
             settingsEls.sectionTime.classList.add('pak-hidden');
@@ -1323,28 +1416,24 @@
             toggleDateInputsDisabled(mode === 'rolling' && isAutoRunEnabled);
         });
 
-        // Start Strategy Toggle
         settingsModalEl.querySelectorAll('input[name="pak-autorun-start"]').forEach(radio => {
             radio.addEventListener('change', (e) => {
-                const strategy = e.target.value;
-                if (strategy === 'minute') {
-                    settingsEls.specificMinuteGroup.classList.remove('pak-hidden');
-                } else {
-                    settingsEls.specificMinuteGroup.classList.add('pak-hidden');
-                }
+                settingsEls.specificMinuteGroup.classList.toggle('pak-hidden', e.target.value !== 'minute');
             });
         });
 
-        // Posting Toggle Logic
         if (settingsEls.postingCheck && settingsEls.postingControls) {
             settingsEls.postingCheck.addEventListener('change', (e) => {
-                settingsEls.postingControls.style.opacity = e.target.checked ? '1' : '0.4';
+                settingsEls.postingControls.classList.toggle('pak-dimmed', !e.target.checked);
             });
         }
 
         return settingsModalEl;
     }
 
+    // Rolling Auto-Run drives the date/time range itself, so those inputs
+    // are locked (not hidden — you can still see what will be used) while
+    // that combination is active.
     function toggleDateInputsDisabled(disabled) {
         const inputs = [
             settingsEls.reportModeWeekly, settingsEls.reportModeDaily, settingsEls.reportModeBackfill,
@@ -1355,19 +1444,34 @@
             settingsEls.backfillIntervalInput
         ];
         inputs.forEach(el => {
-            if(el) {
+            if (el) {
                 el.disabled = disabled;
                 el.style.opacity = disabled ? '0.5' : '1';
             }
         });
         const sections = [settingsEls.weeklyCountSection, settingsEls.dailyRangeSection];
-        sections.forEach(sec => {
-            if(sec) sec.style.opacity = disabled ? '0.5' : '1';
-        });
+        sections.forEach(sec => { if (sec) sec.style.opacity = disabled ? '0.5' : '1'; });
     }
 
     function setSettingsError(message = '') { if (settingsEls?.errorEl) settingsEls.errorEl.textContent = message; }
-    function setReportListLoadingState(isLoading, message = 'Loading saved reports...') { if (!settingsEls?.reportList) return; let loadingEl = settingsEls.reportList.querySelector('[data-report-loading]'); if (isLoading) { if (!loadingEl) { loadingEl = document.createElement('div'); loadingEl.setAttribute('data-report-loading', 'true'); Object.assign(loadingEl.style, { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', minHeight: '100px', color: 'rgba(255,255,255,0.8)' }); loadingEl.innerHTML = `<div style="width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.25); border-top-color: #fff; animation: pakSpin 0.85s linear infinite;"></div><div style="font-size: 12px;"></div>`; settingsEls.reportList.appendChild(loadingEl); } const textNode = loadingEl.querySelector('div:last-child'); if (textNode) textNode.textContent = message; return; } loadingEl?.remove(); }
+
+    function setReportListLoadingState(isLoading, message = 'Loading saved reports...') {
+        if (!settingsEls?.reportList) return;
+        let loadingEl = settingsEls.reportList.querySelector('[data-report-loading]');
+        if (isLoading) {
+            if (!loadingEl) {
+                loadingEl = document.createElement('div');
+                loadingEl.setAttribute('data-report-loading', 'true');
+                loadingEl.className = 'pak-loading-row';
+                loadingEl.innerHTML = `<div class="pak-spinner"></div><div style="font-size: 12px;"></div>`;
+                settingsEls.reportList.appendChild(loadingEl);
+            }
+            const textNode = loadingEl.querySelector('div:last-child');
+            if (textNode) textNode.textContent = message;
+            return;
+        }
+        loadingEl?.remove();
+    }
 
     function onReportModeChanged() { updateModeUI(); renderSettingsReportList(); }
 
@@ -1376,29 +1480,27 @@
 
         const mode = settingsEls.reportModeDaily?.checked ? 'daily' : (settingsEls.reportModeBackfill?.checked ? 'backfill' : 'weekly');
 
-        // Visibility
-        settingsEls.weeklyCountSection.style.display = mode === 'weekly' ? '' : 'none';
-        settingsEls.dailyRangeSection.style.display = (mode === 'daily' || mode === 'backfill') ? '' : 'none';
-        settingsEls.backfillSection.style.display = mode === 'backfill' ? 'block' : 'none';
+        settingsEls.weeklyCountSection.classList.toggle('pak-hidden', mode !== 'weekly');
+        settingsEls.dailyRangeSection.classList.toggle('pak-hidden', !(mode === 'daily' || mode === 'backfill'));
+        settingsEls.backfillSection.classList.toggle('pak-hidden', mode !== 'backfill');
         settingsEls.dailyHint.style.display = mode === 'daily' ? 'block' : 'none';
 
-        // Labels
         if (mode === 'backfill') {
-            settingsEls.labelFromDate.textContent = "Start Date";
-            settingsEls.labelToDate.textContent = "End Date";
-            settingsEls.timeRangeTitle.textContent = "Start & End Times";
-            settingsEls.labelHourFrom.textContent = "Start Hour";
-            settingsEls.labelMinuteFrom.textContent = "Start Minute";
-            settingsEls.labelHourTo.textContent = "End Hour";
-            settingsEls.labelMinuteTo.textContent = "End Minute";
+            settingsEls.labelFromDate.textContent = 'Start Date';
+            settingsEls.labelToDate.textContent = 'End Date';
+            settingsEls.timeRangeTitle.textContent = 'Start & End Times';
+            settingsEls.labelHourFrom.textContent = 'Start Hour';
+            settingsEls.labelMinuteFrom.textContent = 'Start Minute';
+            settingsEls.labelHourTo.textContent = 'End Hour';
+            settingsEls.labelMinuteTo.textContent = 'End Minute';
         } else {
-            settingsEls.labelFromDate.textContent = "From Date";
-            settingsEls.labelToDate.textContent = "To Date";
-            settingsEls.timeRangeTitle.textContent = "Time Range";
-            settingsEls.labelHourFrom.textContent = "Hour From";
-            settingsEls.labelMinuteFrom.textContent = "Minute From";
-            settingsEls.labelHourTo.textContent = "Hour To";
-            settingsEls.labelMinuteTo.textContent = "Minute To";
+            settingsEls.labelFromDate.textContent = 'From Date';
+            settingsEls.labelToDate.textContent = 'To Date';
+            settingsEls.timeRangeTitle.textContent = 'Time Range';
+            settingsEls.labelHourFrom.textContent = 'Hour From';
+            settingsEls.labelMinuteFrom.textContent = 'Minute From';
+            settingsEls.labelHourTo.textContent = 'Hour To';
+            settingsEls.labelMinuteTo.textContent = 'Minute To';
         }
     }
 
@@ -1406,29 +1508,54 @@
     function setAllReportSelections(checked) { if (!settingsEls?.reportList) return; Array.from(settingsEls.reportList.querySelectorAll('input[type="checkbox"]')).forEach(box => { box.checked = checked; const name = box.dataset.reportName; if (name) settings.selectedReports[name] = checked; }); }
 
     function renderSettingsReportList() {
-        if (!settingsEls?.reportList) return; settingsEls.reportList.innerHTML = '';
+        if (!settingsEls?.reportList) return;
+        settingsEls.reportList.innerHTML = '';
         const names = availableReports.length ? availableReports : reportNamesFallback();
-        // Determine which URL map to use based on main report mode (daily vs weekly)
-        // Note: Backfill usually implies Daily data points
+        // Backfill posts through the same map as Daily (both are timestamped data points).
         const activeMap = settingsEls.reportModeBackfill.checked ? REPORT_POST_URLS_BACKFILL
-                : settingsEls.reportModeDaily.checked    ? REPORT_POST_URLS_DAILY
-                :                                          REPORT_POST_URLS_WEEKLY;
+            : settingsEls.reportModeDaily.checked ? REPORT_POST_URLS_DAILY
+                : REPORT_POST_URLS_WEEKLY;
 
-        const grid = document.createElement('div'); Object.assign(grid.style, { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '6px' });
-        names.forEach(reportName => { if (typeof settings.selectedReports[reportName] !== 'boolean') settings.selectedReports[reportName] = true; const wrap = document.createElement('label'); Object.assign(wrap.style, { display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px', background: '#0f0f0f', cursor: 'pointer', minHeight: '44px', boxSizing: 'border-box' }); const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.reportName = reportName; checkbox.checked = !!settings.selectedReports[reportName]; checkbox.style.transform = 'scale(1.05)'; checkbox.addEventListener('change', () => { settings.selectedReports[reportName] = !!checkbox.checked; }); const text = document.createElement('div'); Object.assign(text.style, { display: 'flex', flexDirection: 'column', gap: '1px', minWidth: '0' }); const title = document.createElement('div'); Object.assign(title.style, { fontWeight: '700', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: '12px' }); title.textContent = reportName; const sub = document.createElement('div'); Object.assign(sub.style, { fontSize: '10px', opacity: '0.75' }); sub.textContent = !!findUrlInMap(activeMap, reportName) ? 'Mapped for posting' : 'Will run only'; text.appendChild(title); text.appendChild(sub); wrap.appendChild(checkbox); wrap.appendChild(text); grid.appendChild(wrap); });
+        const grid = document.createElement('div');
+        grid.className = 'pak-report-grid';
+
+        names.forEach(reportName => {
+            if (typeof settings.selectedReports[reportName] !== 'boolean') settings.selectedReports[reportName] = true;
+
+            const wrap = document.createElement('label');
+            wrap.className = 'pak-report-item';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.dataset.reportName = reportName;
+            checkbox.checked = !!settings.selectedReports[reportName];
+            checkbox.addEventListener('change', () => { settings.selectedReports[reportName] = !!checkbox.checked; });
+
+            const text = document.createElement('div');
+            text.className = 'pak-report-item-text';
+
+            const title = document.createElement('div');
+            title.className = 'pak-report-item-title';
+            title.textContent = reportName;
+
+            const sub = document.createElement('div');
+            sub.className = 'pak-report-item-sub';
+            sub.textContent = findUrlInMap(activeMap, reportName) ? 'Mapped for posting' : 'Will run only';
+
+            text.appendChild(title);
+            text.appendChild(sub);
+            wrap.appendChild(checkbox);
+            wrap.appendChild(text);
+            grid.appendChild(wrap);
+        });
+
         settingsEls.reportList.appendChild(grid);
     }
 
     function loadSettingsIntoPanel() {
         settingsEls.postEnabledCheckbox.checked = !!settings.postEnabled;
+        settingsEls.postingControls.classList.toggle('pak-dimmed', !settingsEls.postEnabledCheckbox.checked);
 
-        const postingCheck = settingsModalEl.querySelector('#pak-posting-enabled-check');
-        const postingControls = settingsModalEl.querySelector('#pak-posting-controls');
-        if(postingCheck && postingControls) {
-             postingControls.style.opacity = postingCheck.checked ? '1' : '0.4';
-        }
-
-        // Radio Buttons
         settingsEls.reportModeWeekly.checked = settings.reportMode === 'weekly';
         settingsEls.reportModeDaily.checked = settings.reportMode === 'daily';
         settingsEls.reportModeBackfill.checked = settings.reportMode === 'backfill';
@@ -1443,14 +1570,12 @@
         settingsEls.hourToInput.value = pad2(settings.hourTo || '23');
         settingsEls.minuteToInput.value = pad2(settings.minuteTo || '59');
 
-        // Load Export Mode (Checkboxes)
         const exportMode = settings.exportMode || { combined: true, individual: true };
         settingsEls.exportCombinedCheckbox.checked = !!exportMode.combined;
         settingsEls.exportIndividualCheckbox.checked = !!exportMode.individual;
 
-        // Load Auto Run Settings
         settingsEls.enabledCheck.checked = !!autoRunSettings.enabled;
-        settingsEls.targetSelect.value = autoRunSettings.targetMode;
+        settingsEls.targetSelect.value = autoRunSettings.targetMode || 'native';
         settingsEls.modeSelect.value = autoRunSettings.mode;
         settingsEls.timeInput.value = autoRunSettings.timeMinutes;
         settingsEls.intervalInput.value = autoRunSettings.intervalMinutes;
@@ -1465,12 +1590,8 @@
         settingsEls.modeSelect.dispatchEvent(new Event('change'));
 
         const checkedRadio = document.querySelector('input[name="pak-autorun-start"]:checked');
-        if (checkedRadio) {
-             const evt = new Event('change');
-             checkedRadio.dispatchEvent(evt);
-        } else {
-            settingsEls.specificMinuteGroup.classList.add('pak-hidden');
-        }
+        if (checkedRadio) checkedRadio.dispatchEvent(new Event('change'));
+        else settingsEls.specificMinuteGroup.classList.add('pak-hidden');
 
         updateModeUI(); renderSettingsReportList();
     }
@@ -1480,7 +1601,6 @@
         const s = defaultSettings();
         s.postEnabled = !!settingsEls.postEnabledCheckbox.checked;
 
-        // Mode
         if (settingsEls.reportModeWeekly.checked) s.reportMode = 'weekly';
         else if (settingsEls.reportModeDaily.checked) s.reportMode = 'daily';
         else if (settingsEls.reportModeBackfill.checked) s.reportMode = 'backfill';
@@ -1496,7 +1616,6 @@
         s.minuteTo = clampPad2(settingsEls.minuteToInput.value, 0, 59, '59');
         Array.from(settingsEls.reportList.querySelectorAll('input[type="checkbox"]')).forEach(box => { const name = box.dataset.reportName; if (name) s.selectedReports[name] = !!box.checked; });
 
-        // Save Export Mode (Checkboxes)
         s.exportMode = {
             combined: !!settingsEls.exportCombinedCheckbox.checked,
             individual: !!settingsEls.exportIndividualCheckbox.checked
@@ -1514,7 +1633,7 @@
         autoRunSettings.rollingDelayMinutes = parseInt(settingsEls.rollingDelaySelect.value) || 1;
 
         const startRadios = document.querySelectorAll('input[name="pak-autorun-start"]');
-        startRadios.forEach(r => { if(r.checked) autoRunSettings.intervalStartMode = r.value; });
+        startRadios.forEach(r => { if (r.checked) autoRunSettings.intervalStartMode = r.value; });
 
         autoRunSettings.intervalStartMinute = parseInt(settingsEls.startMinuteInput.value) || 0;
 
@@ -1525,34 +1644,58 @@
         resetAutoRunScheduler();
     }
 
-    function openSettingsPanel() { if (controlsDisabled) return; settingsOpen = true; ensureSettingsModal(); setSettingsError(''); setReportListLoadingState(true, 'Loading live saved reports...'); settingsModalEl.style.display = 'flex'; document.body.style.overflow = 'hidden'; loadSettingsIntoPanel(); (async () => { try { await loadAvailableReportsAndNormalizeSettings(); if (!settingsOpen) return; loadSettingsIntoPanel(); setReportListLoadingState(false); setSettingsError(''); } catch (err) { console.warn('Could not load live reports:', err); if (!settingsOpen) return; setReportListLoadingState(false); setSettingsError('Could not load live reports. Showing cached list instead.'); } })(); }
-    function closeSettingsPanel() { if (!settingsModalEl) return; settingsModalEl.style.display = 'none'; document.body.style.overflow = ''; settingsOpen = false; setTimeout(() => { clickReportBuilderTab().catch(() => {}); }, 150); }
+    function openSettingsPanel() {
+        if (controlsDisabled) return;
+        settingsOpen = true;
+        ensureSettingsModal();
+        setSettingsError('');
+        setReportListLoadingState(true, 'Loading live saved reports...');
+        settingsModalEl.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+        loadSettingsIntoPanel();
+        (async () => {
+            try {
+                await loadAvailableReportsAndNormalizeSettings();
+                if (!settingsOpen) return;
+                loadSettingsIntoPanel();
+                setReportListLoadingState(false);
+                setSettingsError('');
+            } catch (err) {
+                console.warn('Could not load live reports:', err);
+                if (!settingsOpen) return;
+                setReportListLoadingState(false);
+                setSettingsError('Could not load live reports. Showing cached list instead.');
+            }
+        })();
+    }
+
+    function closeSettingsPanel() {
+        if (!settingsModalEl) return;
+        settingsModalEl.style.display = 'none';
+        document.body.style.overflow = '';
+        settingsOpen = false;
+        setTimeout(() => { clickReportBuilderTab().catch(() => { }); }, 150);
+    }
 
     async function waitForPageReady() { if (document.readyState !== 'complete') await new Promise(resolve => window.addEventListener('load', resolve, { once: true })); const deadline = Date.now() + 15000; while (Date.now() < deadline) { if (document.querySelector('input[formcontrolname="from"]') && document.querySelector('input[formcontrolname="to"]')) return true; await sleep(120); } return false; }
 
+    // =====================================================================
+    // AUTO RUN SCHEDULER
+    // =====================================================================
 
-    // --- AUTO RUN LOGIC (INTEGRATED) ---
+    function createAutoRunStatusPill() {
+        const pill = document.createElement('div');
+        pill.id = 'pak-status-pill';
+        pill.className = 'pak-ui pak-status-pill';
 
-    function createAutoRunStatusButton() {
-        const btn = document.createElement('div');
-        Object.assign(btn.style, {
-            position: 'fixed', bottom: '10px', left: '10px', zIndex: '99999',
-            background: '#202020', color: '#fff', border: '1px solid #444', borderRadius: '8px',
-            padding: '8px 12px', cursor: 'pointer', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '8px',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.5)', transition: 'background 0.2s'
-        });
-
-        btn.innerHTML = `
-            <div id="pak-status-dot" class="pak-status-dot ${autoRunSettings.enabled ? 'active' : ''}" style="width: 8px; height: 8px; border-radius: 50%; background-color: #555;"></div>
+        pill.innerHTML = `
+            <div id="pak-status-dot" class="pak-status-dot"></div>
             <i class="fa-solid fa-stopwatch"></i>
-            <span id="pak-countdown" class="pak-countdown" style="font-size: 11px; font-family: monospace; color: #aaa;">...</span>
+            <span id="pak-countdown" class="pak-status-text">...</span>
         `;
 
-        btn.onclick = openSettingsPanel;
-        btn.onmouseover = () => btn.style.background = '#333';
-        btn.onmouseout = () => btn.style.background = '#202020';
-
-        document.body.appendChild(btn);
+        pill.onclick = openSettingsPanel;
+        document.body.appendChild(pill);
     }
 
     function findNativeRunButton() {
@@ -1576,6 +1719,10 @@
         }
     }
 
+    // Computes the next scheduled fire time for whichever Auto-Run mode is
+    // active. "rolling" snaps to the next interval boundary (e.g. every 15
+    // minutes on the clock) and then adds the configured run delay, so the
+    // window it processes has already fully closed by the time it fires.
     function calculateNextRun() {
         const now = new Date();
         let next = null;
@@ -1589,19 +1736,13 @@
             let nextM = Math.ceil(m / interval) * interval;
 
             if (m % interval === 0) {
-                if (s === 0) {
-                    nextM = m;
-                } else {
-                    nextM = m + interval;
-                }
+                nextM = (s === 0) ? m : m + interval;
             }
 
             next = new Date(now);
             next.setMinutes(nextM, 0, 0);
 
-            if (delayMins > 0) {
-                next.setMinutes(next.getMinutes() + delayMins);
-            }
+            if (delayMins > 0) next.setMinutes(next.getMinutes() + delayMins);
 
             return next;
 
@@ -1609,14 +1750,14 @@
             const targetMins = autoRunSettings.timeMinutes.split(',')
                 .map(s => parseInt(s.trim()))
                 .filter(n => !isNaN(n) && n >= 0 && n <= 59)
-                .sort((a,b) => a - b);
+                .sort((a, b) => a - b);
 
             if (targetMins.length === 0) return null;
 
             const currentMin = now.getMinutes();
             const currentHour = now.getHours();
 
-            let found = targetMins.find(m => m > currentMin);
+            const found = targetMins.find(m => m > currentMin);
 
             if (found !== undefined) {
                 next = new Date(now);
@@ -1650,6 +1791,7 @@
     function updateCountdown() {
         const statusDot = document.getElementById('pak-status-dot');
         const countText = document.getElementById('pak-countdown');
+        if (!statusDot || !countText) return;
 
         if (!autoRunSettings.enabled) {
             countText.textContent = 'Off';
@@ -1696,9 +1838,7 @@
                 const endStr = pad2(windowEndTime.getHours()) + ':' + pad2(windowEndTime.getMinutes());
 
                 tooltip += `\nData Window: ${startStr} - ${endStr}`;
-                if (delayMins > 0) {
-                    tooltip += `\n(Execution delayed by ${delayMins}m)`;
-                }
+                if (delayMins > 0) tooltip += `\n(Execution delayed by ${delayMins}m)`;
             } else {
                 const fromStr = settings.hourFrom + ':' + settings.minuteFrom;
                 const toStr = settings.hourTo + ':' + settings.minuteTo;
@@ -1745,7 +1885,5 @@
     window.addEventListener('load', () => {
         scheduleNextRun();
     });
-
-
 
 })();
