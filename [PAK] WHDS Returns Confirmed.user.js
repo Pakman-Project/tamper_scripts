@@ -6,6 +6,8 @@
 // @Author       Pak
 // @match        http://whds-intranetweb:8089/reports/Returns*
 // @grant        GM_setClipboard
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20WHDS%20Returns%20Confirmed.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20WHDS%20Returns%20Confirmed.user.js
 // ==/UserScript==
 
 (function () {

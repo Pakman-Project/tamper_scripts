@@ -13,6 +13,8 @@
 // @connect      script.google.com
 // @connect      script.googleusercontent.com
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Pigeonholes%20Automation.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Pigeonholes%20Automation.user.js
 // ==/UserScript==
 
 (function () {
@@ -467,3 +469,4 @@
     }
 
 })();
+

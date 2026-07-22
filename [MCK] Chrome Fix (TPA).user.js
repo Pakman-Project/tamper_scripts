@@ -10,6 +10,8 @@
 // @match        http://ws-whs/putaway/forward/locating/LocatingBonusLocns.asp*
 // @run-at       document-end
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BMCK%5D%20Chrome%20Fix%20(TPA).user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BMCK%5D%20Chrome%20Fix%20(TPA).user.js
 // ==/UserScript==
 
 (function () {
@@ -305,3 +307,4 @@
   setTimeout(renderOriginalLookingTable, 700);
 
 })();
+

@@ -7,8 +7,8 @@
 // @match        https://pon-wpws27/Whds.Dashboard.Web/bonushub/reports*
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
-// @updateURL    https://raw.githubusercontent.com/Pak5012/tamper_scripts/main/bonus-hub-enhancements.user.js
-// @downloadURL  https://raw.githubusercontent.com/Pak5012/tamper_scripts/main/bonus-hub-enhancements.user.js
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20PSD%20-%20Bonus%20Hub%20Enhancements.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20PSD%20-%20Bonus%20Hub%20Enhancements.user.js
 // ==/UserScript==
 
 (function () {

@@ -8,6 +8,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      script.google.com
 // @connect      script.googleusercontent.com
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20RTF%20Monitor%20%E2%80%93%20Widget%20%2B%2015min%20Auto%20Search%20%2B%20Logging.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20RTF%20Monitor%20%E2%80%93%20Widget%20%2B%2015min%20Auto%20Search%20%2B%20Logging.user.js
 // ==/UserScript==
 
 (function () {
@@ -306,3 +308,4 @@
   setTimeout(init, 1200);
 
 })();
+

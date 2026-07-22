@@ -8,8 +8,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      script.google.com
 // @connect      script.googleusercontent.com
-// @updateURL    https://raw.githubusercontent.com/Pak5012/tamper_scripts/main/%5BMCK%20%26%20PAK%5D%20E3%20Dropzone.user.js
-// @downloadURL  https://raw.githubusercontent.com/Pak5012/tamper_scripts/main/%5BMCK%20%26%20PAK%5D%20E3%20Dropzone.user.js
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BMCK%20%26%20PAK%5D%20E3%20Dropzone.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BMCK%20%26%20PAK%5D%20E3%20Dropzone.user.js
 // ==/UserScript==
 
 (function () {

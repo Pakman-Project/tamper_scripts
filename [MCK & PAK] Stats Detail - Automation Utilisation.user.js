@@ -7,6 +7,8 @@
 // @match        *://pon-wpas46-cl01.next-uk.next.loc/cgi-bin/web_om_rsps2.exe*
 // @grant        GM_setClipboard
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BMCK%20%26%20PAK%5D%20Stats%20Detail%20-%20Automation%20Utilisation.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BMCK%20%26%20PAK%5D%20Stats%20Detail%20-%20Automation%20Utilisation.user.js
 // ==/UserScript==
 
 (function () {
@@ -1001,4 +1003,4 @@
     });
   })();
 
-})();
+})();

@@ -7,6 +7,8 @@
 // @match        https://pon-wpws27/Whds.Dashboard.Web/intake/productivity*
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Intake%20Productivity%20-%20Elmsall%203%20Completed%20Row.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Intake%20Productivity%20-%20Elmsall%203%20Completed%20Row.user.js
 // ==/UserScript==
 
 (function () {

@@ -8,6 +8,8 @@
 // @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
 // @grant        GM_xmlhttpRequest
 // @connect      script.google.com
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20PO%20Total%20Complete%20Widget.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20PO%20Total%20Complete%20Widget.user.js
 // ==/UserScript==
 
 /* -------------------- EARLY BLOCKING OVERLAY (instant) -------------------- */
@@ -820,3 +822,4 @@
     });
 
 })(jQuery);
+

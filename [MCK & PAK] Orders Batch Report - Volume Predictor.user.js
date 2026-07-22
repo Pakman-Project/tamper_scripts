@@ -6,6 +6,8 @@
 // @author       Mucek & Pak
 // @match        https://pon-wpws27/Whds.Dashboard.Web/reports/OrdersBatchReport*
 // @grant        GM_setClipboard
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BMCK%20%26%20PAK%5D%20Orders%20Batch%20Report%20-%20Volume%20Predictor.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BMCK%20%26%20PAK%5D%20Orders%20Batch%20Report%20-%20Volume%20Predictor.user.js
 // ==/UserScript==
 
 (function () {
@@ -1634,4 +1636,4 @@
         setInterval(() => updateFromPage(false), 10000);
     });
 
-})();
+})();

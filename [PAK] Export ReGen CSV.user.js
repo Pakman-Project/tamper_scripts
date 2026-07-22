@@ -7,6 +7,8 @@
 // @match        http://whds-directory-web-v1:8091/ReGen.aspx
 // @grant        none
 // @run-at       document-end
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Export%20ReGen%20CSV.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Export%20ReGen%20CSV.user.js
 // ==/UserScript==
 
 (function () {

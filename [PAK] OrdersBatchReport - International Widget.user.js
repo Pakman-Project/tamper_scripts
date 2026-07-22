@@ -7,6 +7,8 @@
 // @match        https://pon-wpws27/Whds.Dashboard.Web/reports/OrdersBatchReport*
 // @grant        GM_addStyle
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20OrdersBatchReport%20-%20International%20Widget.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20OrdersBatchReport%20-%20International%20Widget.user.js
 // ==/UserScript==
 
 (function () {

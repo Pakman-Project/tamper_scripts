@@ -8,6 +8,8 @@
 // @match        https://pon-wpws27/Whds.Dashboard.Web/e3/packing*
 // @grant        none
 // @run-at       document-end
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20E3%20Combined%20Progress%20Export.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20E3%20Combined%20Progress%20Export.user.js
 // ==/UserScript==
 
 (function () {

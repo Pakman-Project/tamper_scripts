@@ -6,6 +6,8 @@
 // @author       Pak
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20WHDS%20Induct.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20WHDS%20Induct.user.js
 // ==/UserScript==
 
 (function () {

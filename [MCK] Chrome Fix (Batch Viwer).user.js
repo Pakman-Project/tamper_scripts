@@ -11,6 +11,8 @@
 // @match        http://ws-whs/RapidsII/Screens/BonusReport/BonusFrame.asp
 // @run-at       document-end
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BMCK%5D%20Chrome%20Fix%20(Batch%20Viwer).user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BMCK%5D%20Chrome%20Fix%20(Batch%20Viwer).user.js
 // ==/UserScript==
 
 (function () {
@@ -318,3 +320,4 @@
   renderLegacyGridIfPresent();
 
 })();
+

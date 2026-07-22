@@ -8,6 +8,8 @@
 // @match        https://ibm-red/next/prd/app/pxesde/archive/StoreStationSetUp/*
 // @grant        GM_addStyle
 // @run-at       document-end
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20StationSetUp%20Copy%20Button.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20StationSetUp%20Copy%20Button.user.js
 // ==/UserScript==
 
 (function () {

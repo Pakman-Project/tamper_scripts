@@ -7,6 +7,8 @@
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
 // @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
 // @grant        GM_setClipboard
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Progress%20Update_ALL.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Progress%20Update_ALL.user.js
 // ==/UserScript==
 
 (function() {
@@ -833,3 +835,4 @@
     console.log('Progress Update_ALL (uniform buttons) loaded ✔');
 
 })();
+

@@ -7,6 +7,8 @@
 // @grant        GM_xmlhttpRequest
 // @connect      script.google.com
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20StatsDetail%20%E2%86%92%20GoogleSheet%20Poster.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20StatsDetail%20%E2%86%92%20GoogleSheet%20Poster.user.js
 // ==/UserScript==
 
 (function () {

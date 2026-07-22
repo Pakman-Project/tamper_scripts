@@ -5,7 +5,10 @@
 // @description  Full v7.1 UI with unified icon buttons and a full-screen 38% black overlay while running the Inducting→Picking→Way→Drive sequence. Animated spinner while loading; only auto-click new batches that have Picking+Inducting. Console diagnostics.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
+// @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20PO%20Progress%20Float%20Panel.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20PO%20Progress%20Float%20Panel.user.js
 // ==/UserScript==
 
 (function () {

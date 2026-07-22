@@ -7,6 +7,8 @@
 // @match        https://pon-wpas48.next-uk.next.loc/next2020/om/app/op-console/miniload-overview
 // @grant        none
 // @run-at       document-end
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Export%20Cranes%20in%20Fault.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Export%20Cranes%20in%20Fault.user.js
 // ==/UserScript==
 
 (function () {

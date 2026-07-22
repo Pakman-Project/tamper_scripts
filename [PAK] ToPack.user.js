@@ -5,7 +5,10 @@
 // @description  ToPack with Sorter6 exception: keep and convert to C999. Modal preview (black theme). Refresh button re-runs picking & extraction. toggleDepotCheckbox + auto-refresh only on modal close. Tab-delimited clipboard copy (GM_setClipboard) & toast. Sticky header fixed, subtle borders, hover effects. ALL BUTTONS USE FONT AWESOME ICONS (uniform size & style)
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
+// @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
 // @grant        GM_setClipboard
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20ToPack.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20ToPack.user.js
 // ==/UserScript==
 
 (function() {

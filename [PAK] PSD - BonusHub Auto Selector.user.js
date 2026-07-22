@@ -7,6 +7,8 @@
 // @match        https://pon-wpws27/Whds.Dashboard.Web/bonushub/reports
 // @grant        none
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20PSD%20-%20BonusHub%20Auto%20Selector.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20PSD%20-%20BonusHub%20Auto%20Selector.user.js
 // ==/UserScript==
 
 (function () {

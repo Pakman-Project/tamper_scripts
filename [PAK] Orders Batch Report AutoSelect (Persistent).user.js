@@ -6,6 +6,8 @@
 // @author       Pak
 // @match        https://pon-wpws27/Whds.Dashboard.Web/reports/OrdersBatchReport
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Orders%20Batch%20Report%20AutoSelect%20(Persistent).user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20Orders%20Batch%20Report%20AutoSelect%20(Persistent).user.js
 // ==/UserScript==
 
 (function () {
@@ -93,3 +95,4 @@
   }, 500);
 
 })();
+

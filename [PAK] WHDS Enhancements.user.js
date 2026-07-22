@@ -6,8 +6,11 @@
 // @author       Pak
 // @match        http://whds-intranetweb:8089/reports/Returns*
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
+// @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
 // @grant        none
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20WHDS%20Enhancements.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20WHDS%20Enhancements.user.js
 // ==/UserScript==
 
 (function () {
@@ -183,3 +186,4 @@
   });
 
 })();
+

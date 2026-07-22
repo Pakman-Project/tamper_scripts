@@ -5,8 +5,11 @@
 // @description  Added color dots to stacked bar legends. Combined card view for bars.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
+// @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview#
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20WHDS%20Full%20Screen%20Dashboard.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20WHDS%20Full%20Screen%20Dashboard.user.js
 // ==/UserScript==
 
 (function() {

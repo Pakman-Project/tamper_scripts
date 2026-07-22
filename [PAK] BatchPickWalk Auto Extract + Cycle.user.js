@@ -7,6 +7,8 @@
 // @match        http://ws-whs.next-uk.next.loc/DirectoryManagement/BatchPickWalk3.asp*
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
+// @updateURL    https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20BatchPickWalk%20Auto%20Extract%20%2B%20Cycle.user.js
+// @downloadURL  https://raw.githubusercontent.com/Pakman-Project/tamper_scripts/main/%5BPAK%5D%20BatchPickWalk%20Auto%20Extract%20%2B%20Cycle.user.js
 // ==/UserScript==
 
 (function() {
@@ -174,3 +176,4 @@
     });
 
 })();
+
