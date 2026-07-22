@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [PAK] WHDS Full Screen Dashboard
 // @namespace    http://tampermonkey.net/
-// @version      3.6
-// @description  Added color dots to stacked bar legends. Combined card view for bars.
+// @version      3.7
+// @description  Added color dots to stacked bar legends. Combined card view for bars. Supports both legacy and Modern (pon-wdws21) page layouts.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
 // @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
@@ -14,6 +14,15 @@
 
 (function() {
     'use strict';
+
+    // --- Layout adapter (legacy vs Modern page) ---
+    // The Modern page (pon-wdws21 /Modern/) renders the same data as a
+    // Bootstrap div grid instead of the legacy table markup. All layout-
+    // dependent selectors go through these constants.
+    const PAK_MODERN = /\/modern\//i.test(location.pathname);
+    const PAK_BATCH_SEL = PAK_MODERN ? 'div.progress-overview-batch' : '.batch-row';
+    const PAK_ROW_SEL = PAK_MODERN ? '.progress-overview-row' : '.progress-row, .packing-row';
+    const PAK_DESC_SEL = PAK_MODERN ? '.progress-overview-description-cell' : '.description-column';
 
     // State
     let pakActiveFilter = null;
@@ -590,8 +599,24 @@
     }
 
     function pakGetSegmentLabel(element) {
+        // Modern puts the label text directly on the .progress-bar segment;
+        // legacy keeps it in a .bar-label child.
+        if (PAK_MODERN) return (element.innerText || '').trim();
         const label = element.querySelector('.bar-label');
         return label ? label.innerText.trim() : '';
+    }
+
+    // A segment only counts if it's a real bar inside the stacked progress
+    // strip (excludes the strip container itself and layout wrappers).
+    function pakIsBarSegment(seg) {
+        if (PAK_MODERN) return seg.parentElement.classList.contains('progress-overview-stacked');
+        return seg.parentElement.classList.contains('main-bar-column') || seg.parentElement.classList.contains('packing-row-item');
+    }
+
+    function pakGetRowSegments(row) {
+        return PAK_MODERN
+            ? row.querySelectorAll('.progress-bar')
+            : row.querySelectorAll('[class*="progress"], [class*="parcels"], [class*="effort"]');
     }
 
     // --- CORE RENDER FUNCTION ---
@@ -617,7 +642,7 @@
             controlsArea.style.display = 'none';
         }
 
-        const originalBatches = document.querySelectorAll('.batch-row');
+        const originalBatches = document.querySelectorAll(PAK_BATCH_SEL);
         if (originalBatches.length === 0) return;
 
         let totalsBatch = null;
@@ -654,18 +679,18 @@
                 const batchTime = batchDateEl ? batchDateEl.innerText.replace(/[\r\n]+/g, ' ').trim() : '';
                 const isTotals = batchNum.includes('Totals');
 
-                const progressRows = batchRow.querySelectorAll('.progress-row, .packing-row');
+                const progressRows = batchRow.querySelectorAll(PAK_ROW_SEL);
                 let rowSegments = [];
 
                 progressRows.forEach(row => {
                     if (row.style.display === 'none' || row.classList.contains('template')) return;
-                    const descEl = row.querySelector('.description-column');
+                    const descEl = row.querySelector(PAK_DESC_SEL);
                     const areaName = descEl ? descEl.textContent.trim() : 'Unknown';
 
                     if (pakActiveFilter && areaName.toLowerCase() === pakActiveFilter.toLowerCase()) {
-                        const segments = row.querySelectorAll('[class*="progress"], [class*="parcels"], [class*="effort"]');
+                        const segments = pakGetRowSegments(row);
                         segments.forEach(seg => {
-                            if (seg.parentElement.classList.contains('main-bar-column') || seg.parentElement.classList.contains('packing-row-item')) {
+                            if (pakIsBarSegment(seg)) {
                                 const width = pakGetSegmentWidth(seg);
                                 if (width > 0) {
                                     const colorClass = pakGetSegmentColor(seg);
@@ -760,13 +785,13 @@
                     ? 'pak-tv-batch-card pak-totals-card'
                     : 'pak-tv-batch-card';
 
-                const progressRows = batchRow.querySelectorAll('.progress-row, .packing-row');
+                const progressRows = batchRow.querySelectorAll(PAK_ROW_SEL);
                 let targetRowHtml = '';
                 let hasTargetRow = false;
 
                 progressRows.forEach(row => {
                     if (row.style.display === 'none' || row.classList.contains('template')) return;
-                    const descEl = row.querySelector('.description-column');
+                    const descEl = row.querySelector(PAK_DESC_SEL);
                     const areaName = descEl ? descEl.textContent.trim() : 'Unknown';
 
                     if (pakActiveFilter && areaName.toLowerCase() !== pakActiveFilter.toLowerCase()) {
@@ -777,12 +802,12 @@
                     let barSegments = '';
                     let labelText = '';
                     let totalWidth = 0;
-                    const segments = row.querySelectorAll('[class*="progress"], [class*="parcels"], [class*="effort"]');
+                    const segments = pakGetRowSegments(row);
                     let pieData = [];
                     let currentPct = 0;
 
                     segments.forEach(seg => {
-                        if (seg.parentElement.classList.contains('main-bar-column') || seg.parentElement.classList.contains('packing-row-item')) {
+                        if (pakIsBarSegment(seg)) {
                             const width = pakGetSegmentWidth(seg);
                             if (width > 0) {
                                 const colorClass = pakGetSegmentColor(seg);
@@ -891,8 +916,8 @@
             if (mutation.addedNodes.length || mutation.removedNodes.length) {
                 mutation.addedNodes.forEach(node => {
                     if (node.nodeType === 1) {
-                        if (node.classList && node.classList.contains('batch-row')) shouldUpdate = true;
-                        if (node.querySelectorAll && node.querySelectorAll('.batch-row').length > 0) shouldUpdate = true;
+                        if (node.classList && (node.classList.contains('batch-row') || node.classList.contains('progress-overview-batch') || node.classList.contains('progress-overview-row'))) shouldUpdate = true;
+                        if (node.querySelectorAll && node.querySelectorAll('.batch-row, .progress-overview-batch').length > 0) shouldUpdate = true;
                     }
                 });
             }

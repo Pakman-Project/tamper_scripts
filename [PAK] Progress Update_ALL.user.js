@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [PAK] Progress Update_ALL
 // @namespace    http://tampermonkey.net/
-// @version      1.16
-// @description  Auto click batch stages, Drive groups, Sorters, numeric rows 1-999, export batch details CSV, overlay with copy/download/close/refresh. Dark themed overlay, improved clipboard handling. Refresh updates overlay table + TSV (clipboard) + CSV (download) in sync. All buttons unified (Font Awesome icons, fixed size, consistent hover/focus).
+// @version      1.17
+// @description  Auto click batch stages, Drive groups, Sorters, numeric rows 1-999, export batch details CSV, overlay with copy/download/close/refresh. Dark themed overlay, improved clipboard handling. Refresh updates overlay table + TSV (clipboard) + CSV (download) in sync. All buttons unified (Font Awesome icons, fixed size, consistent hover/focus). Supports both legacy and Modern (pon-wdws21) page layouts.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
 // @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
@@ -13,6 +13,64 @@
 
 (function() {
     'use strict';
+
+    // --------------------------
+    // Layout adapter (legacy vs Modern page)
+    // --------------------------
+    // The Modern page (pon-wdws21 /Modern/) renders the same data as a
+    // Bootstrap div grid instead of the legacy table markup, and its
+    // drill-down handler ignores untrusted native clicks — rows must be
+    // clicked through the page's own jQuery (reached via unsafeWindow since
+    // this script runs sandboxed). All layout-dependent lookups go through
+    // these helpers.
+    const PAK_MODERN = /\/modern\//i.test(location.pathname);
+    const PAK_SEL = PAK_MODERN ? {
+        batch: 'div.progress-overview-batch',
+        desc: '.progress-overview-description-cell',
+        total: '.progress-overview-total-cell',
+        totalsDespatchRow: '#endElement-Totals_Despatch'
+    } : {
+        batch: 'div.batch-row[id^="Batch-"]',
+        desc: '.batch-row-item.description-column',
+        total: '.total-column',
+        totalsDespatchRow: '#ProgRow-Totals_Despatch-999999999'
+    };
+    function pakPageJQ() {
+        try { if (typeof unsafeWindow !== 'undefined' && unsafeWindow.jQuery) return unsafeWindow.jQuery; } catch (e) {}
+        return window.jQuery || null;
+    }
+    // Legacy keeps the bar text in a .bar-label child; Modern puts it
+    // directly on the .progress-bar segment.
+    function pakBarLabel(scope, barClass) {
+        if (!scope) return '';
+        const el = PAK_MODERN
+            ? scope.querySelector('.progress-bar.' + barClass)
+            : scope.querySelector('.' + barClass + ' .bar-label');
+        return el ? el.textContent : '';
+    }
+    function pakDrillClick(el) {
+        if (!el) return;
+        if (!PAK_MODERN) { try { el.click(); } catch (e) {} return; }
+        const row = el.closest('.progress-overview-row') || el;
+        const jq = pakPageJQ();
+        if (jq) jq(row).trigger('click');
+        else { try { row.click(); } catch (e) {} }
+    }
+    function pakIsDrillable(el) {
+        if (PAK_MODERN) return !!el.closest('.progress-overview-clickable');
+        return ((el.style.cursor || getComputedStyle(el).cursor) || '') === 'pointer';
+    }
+    // Parent area = clickable top-level row. Modern carries nesting depth in
+    // --progress-row-level (0 = top); legacy marks children with calc() width.
+    function pakIsParentArea(desc) {
+        if (PAK_MODERN) {
+            const row = desc.closest('.progress-overview-row');
+            const level = row ? (parseInt(row.style.getPropertyValue('--progress-row-level'), 10) || 0) : 0;
+            return level === 0 && pakIsDrillable(desc);
+        }
+        const cursor = desc.style.cursor || getComputedStyle(desc).cursor;
+        return cursor === 'pointer' && !/width\s*:\s*calc/i.test(desc.getAttribute('style') || '');
+    }
 
     // --------------------------
     // Config: unified button sizes + visuals
@@ -264,36 +322,33 @@
     // --- Click helpers (kept same) ---
     function clickStages(root = document) {
         const stages = ['Picking', 'Inducting', 'Packing', 'BPP', "Int'l Packing"];
-        const elements = root.querySelectorAll('div.batch-row-item.description-column');
+        const elements = root.querySelectorAll(PAK_SEL.desc);
         let count = 0;
         elements.forEach(el => {
             const text = el.textContent.trim();
-            const cursor = el.style.cursor || getComputedStyle(el).cursor;
-            if (stages.includes(text) && cursor === 'pointer') {
-                try { el.click(); count++; } catch(e) {}
+            if (stages.includes(text) && pakIsDrillable(el)) {
+                try { pakDrillClick(el); count++; } catch(e) {}
             }
         });
         console.log(`Clicked ${count} stage items`);
     }
     function clickDriveGroup(root = document, { bottomFirst = false } = {}) {
         const targets = ['Drive', 'Elmsall3', 'Way'];
-        const elements = Array.from(root.querySelectorAll('div.batch-row-item.description-column'));
+        const elements = Array.from(root.querySelectorAll(PAK_SEL.desc));
         let count = 0;
         if (bottomFirst) {
             for (let i = elements.length - 1; i >= 0; i--) {
                 const el = elements[i];
                 const text = el.textContent.trim();
-                const cursor = el.style.cursor || getComputedStyle(el).cursor;
-                if (targets.includes(text) && cursor === 'pointer') {
-                    try { el.click(); count++; } catch(e) {}
+                if (targets.includes(text) && pakIsDrillable(el)) {
+                    try { pakDrillClick(el); count++; } catch(e) {}
                 }
             }
         } else {
             elements.forEach(el => {
                 const text = el.textContent.trim();
-                const cursor = el.style.cursor || getComputedStyle(el).cursor;
-                if (targets.includes(text) && cursor === 'pointer') {
-                    try { el.click(); count++; } catch(e) {}
+                if (targets.includes(text) && pakIsDrillable(el)) {
+                    try { pakDrillClick(el); count++; } catch(e) {}
                 }
             });
         }
@@ -301,27 +356,31 @@
     }
     function clickSorters(root = document) {
         const sorters = ['Sorter 1','Sorter 2','Sorter 3','Sorter 4','Sorter 5','Sorter 6'];
-        const elements = root.querySelectorAll('div.batch-row-item.description-column');
+        const elements = root.querySelectorAll(PAK_SEL.desc);
         let count = 0;
         elements.forEach(el => {
             const text = el.textContent.trim();
-            const cursor = el.style.cursor || getComputedStyle(el).cursor;
-            if (sorters.includes(text) && cursor === 'pointer') {
-                try { el.click(); count++; } catch(e) {}
+            if (sorters.includes(text) && pakIsDrillable(el)) {
+                try { pakDrillClick(el); count++; } catch(e) {}
             }
         });
         console.log(`Clicked ${count} Sorter items`);
     }
-    function isTotalsRow(el) { return el.classList.contains('total-row'); }
+    function isTotalsRow(el) {
+        if (PAK_MODERN) {
+            const b = el.closest('div.progress-overview-batch');
+            return !!b && (b.querySelector('.batchNo')?.textContent.trim() === 'Totals');
+        }
+        return el.classList.contains('total-row');
+    }
     function clickNumericRows(root = document) {
-        const elements = root.querySelectorAll('div.batch-row-item.description-column');
+        const elements = root.querySelectorAll(PAK_SEL.desc);
         let clickedCount = 0;
         elements.forEach(el => {
-            const cursor = el.style.cursor || getComputedStyle(el).cursor;
             const text = el.textContent.trim();
             const num = Number(text);
-            if (cursor === 'pointer' && !isNaN(num) && num >= 1 && num <= 999 && !isTotalsRow(el)) {
-                try { el.click(); clickedCount++; } catch (e) {}
+            if (pakIsDrillable(el) && !isNaN(num) && num >= 1 && num <= 999 && !isTotalsRow(el)) {
+                try { pakDrillClick(el); clickedCount++; } catch (e) {}
             }
         });
         console.log(`Clicked ${clickedCount} numeric rows (1–999)`);
@@ -364,7 +423,7 @@
 
     // --- Extract batch rows (kept logic) ---
     function extractBatchRowsFor(batchElements = null) {
-        const batches = batchElements || Array.from(document.querySelectorAll('div.batch-row[id^="Batch-"]'));
+        const batches = batchElements || Array.from(document.querySelectorAll(PAK_SEL.batch));
         const data = [];
         function extractNumber(text, insideParentheses = false) {
             if (!text) return '';
@@ -391,23 +450,20 @@
                 const parts = dateElem.innerHTML.split('<br>').map(s => s.replace(/<[^>]*>/g, '').trim()).filter(Boolean);
                 batchTime = parts.reverse().join(' ');
             }
-            const descriptions = batch.querySelectorAll('.batch-row-item.description-column');
+            const descriptions = batch.querySelectorAll(PAK_SEL.desc);
             let currentParent = '';
             descriptions.forEach(desc => {
                 const text = desc.textContent.trim();
                 if (!text) return;
                 if (text.toLowerCase().includes('total')) return;
-                const cursor = desc.style.cursor || getComputedStyle(desc).cursor;
-                const inlineStyle = desc.getAttribute('style') || '';
-                const isParentArea = cursor === 'pointer' && !/width\s*:\s*calc/i.test(inlineStyle);
-                if (isParentArea) currentParent = text;
+                if (pakIsParentArea(desc)) currentParent = text;
                 const row = {};
                 row['ProgressDay'] = progressDayValue;
                 row['Batch No.'] = batchNo;
                 row['Batch Time'] = batchTime;
                 row['ParentArea'] = currentParent || '';
                 row['Area'] = text;
-                const totalElem = desc.parentElement.querySelector('.total-column');
+                const totalElem = desc.parentElement.querySelector(PAK_SEL.total);
                 let totalVal = '';
                 if (totalElem) {
                     let rawHTML = totalElem.innerHTML.trim();
@@ -416,18 +472,18 @@
                 }
                 let completedVal = '';
                 if (currentParent === 'Packing') {
-                    const completedElem = desc.parentElement.querySelector('.parcels-packed .bar-label');
-                    if (completedElem) completedVal = extractNumber(completedElem.textContent.trim(), true);
+                    const completedText = pakBarLabel(desc.parentElement, 'parcels-packed');
+                    if (completedText) completedVal = extractNumber(completedText.trim(), true);
                 } else {
-                    const completedElem = desc.parentElement.querySelector('.progress-complete .bar-label');
-                    if (completedElem) completedVal = extractNumber(completedElem.textContent.trim(), false);
+                    const completedText = pakBarLabel(desc.parentElement, 'progress-complete');
+                    if (completedText) completedVal = extractNumber(completedText.trim(), false);
                 }
                 let allocatedVal = '';
-                const allocatedElem = desc.parentElement.querySelector('.progress-allocated .bar-label');
-                if (allocatedElem) allocatedVal = extractNumber(allocatedElem.textContent.trim(), false);
+                const allocatedText = pakBarLabel(desc.parentElement, 'progress-allocated');
+                if (allocatedText) allocatedVal = extractNumber(allocatedText.trim(), false);
                 let heldVal = '';
-                const heldElem = desc.parentElement.querySelector('.progress-held .bar-label');
-                if (heldElem) heldVal = extractNumber(heldElem.textContent.trim(), false);
+                const heldText = pakBarLabel(desc.parentElement, 'progress-held');
+                if (heldText) heldVal = extractNumber(heldText.trim(), false);
                 const totalNum = parseInt((totalVal || '0').replace(/,/g, ''), 10);
                 const completedNum = parseInt((completedVal || '0').replace(/,/g, ''), 10);
                 row['Total'] = formatNumber(totalVal);
@@ -475,20 +531,34 @@
         console.log("CSV exported ✅");
     }
 
+    // --- Find the clickable Totals Despatch element (layout-aware) ---
+    // Legacy: a description cell inside the #ProgRow-... container.
+    // Modern: the #endElement-Totals_Despatch row itself is the click target.
+    function findTotalsDespatchEl() {
+        const targetRow = document.querySelector(PAK_SEL.totalsDespatchRow);
+        if (!targetRow) return null;
+        if (PAK_MODERN) {
+            return targetRow.classList.contains('progress-overview-clickable')
+                ? (targetRow.querySelector('.progress-overview-description-cell') || targetRow)
+                : null;
+        }
+        return Array.from(targetRow.querySelectorAll('.batch-row-item.description-column')).find(e => e.textContent.trim() === 'Despatch' && ((e.style.cursor || getComputedStyle(e).cursor) === 'pointer')) || null;
+    }
+
     // --- Click Despatch twice helper ---
     async function clickDespatchTwice() {
-        const targetRow = document.querySelector('#ProgRow-Totals_Despatch-999999999');
+        const targetRow = document.querySelector(PAK_SEL.totalsDespatchRow);
         if (!targetRow) {
-            console.warn('Progress row #ProgRow-Totals_Despatch-999999999 not found for despatch clicks.');
+            console.warn(`Progress row ${PAK_SEL.totalsDespatchRow} not found for despatch clicks.`);
             return;
         }
-        const despatchEl = Array.from(targetRow.querySelectorAll('.batch-row-item.description-column')).find(e => e.textContent.trim() === 'Despatch' && ((e.style.cursor || getComputedStyle(e).cursor) === 'pointer'));
+        const despatchEl = findTotalsDespatchEl();
         if (!despatchEl) {
             console.warn('Despatch element not found or not clickable.');
             return;
         }
         try {
-            for (let i = 0; i < 2; i++) { try { despatchEl.click(); } catch(e){} await delay(400); }
+            for (let i = 0; i < 2; i++) { try { pakDrillClick(despatchEl); } catch(e){} await delay(400); }
             console.log('Clicked Despatch twice.');
         } catch (e) {
             console.warn('Error during despatch clicks', e);
@@ -685,16 +755,13 @@
 
             try {
                 // 0) Try top Despatch
-                const topTargetRow = document.querySelector('#ProgRow-Totals_Despatch-999999999');
-                if (topTargetRow) {
-                    const topDespatchEl = Array.from(topTargetRow.querySelectorAll('.batch-row-item.description-column')).find(e => e.textContent.trim() === 'Despatch' && ((e.style.cursor || getComputedStyle(e).cursor) === 'pointer'));
-                    if (topDespatchEl) {
-                        for (let i = 0; i < 3; i++) { try { topDespatchEl.click(); } catch(e){} await delay(500); }
-                    } else console.warn('Top Despatch not found or clickable.');
-                } else console.warn('Top progress row for Despatch not found.');
+                const topDespatchEl = findTotalsDespatchEl();
+                if (topDespatchEl) {
+                    for (let i = 0; i < 3; i++) { try { pakDrillClick(topDespatchEl); } catch(e){} await delay(500); }
+                } else console.warn('Top Despatch not found or clickable.');
 
                 await delay(1000);
-                const allBatches = Array.from(document.querySelectorAll('div.batch-row[id^="Batch-"]'));
+                const allBatches = Array.from(document.querySelectorAll(PAK_SEL.batch));
                 const newBatchElements = allBatches.filter(b => {
                     const bn = b.querySelector('.batchNo')?.textContent.trim();
                     return bn && !processedBatchNos.has(bn);
@@ -745,6 +812,11 @@
                 } else {
                     // fallback scoped flow for the batch under the target progress row
                     const maybeBatchNo = (() => {
+                        if (PAK_MODERN) {
+                            const row = document.querySelector(PAK_SEL.totalsDespatchRow);
+                            const b = row ? row.closest('div.progress-overview-batch')?.querySelector('.batchNo') : null;
+                            return b ? b.textContent.trim() : null;
+                        }
                         const b = document.querySelector('#ProgRow-Totals_Despatch-999999999 .batchNo');
                         return b ? b.textContent.trim() : null;
                     })();

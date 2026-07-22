@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [PAK] ToPack
 // @namespace    http://tampermonkey.net/
-// @version      5.6
-// @description  ToPack with Sorter6 exception: keep and convert to C999. Modal preview (black theme). Refresh button re-runs picking & extraction. toggleDepotCheckbox + auto-refresh only on modal close. Tab-delimited clipboard copy (GM_setClipboard) & toast. Sticky header fixed, subtle borders, hover effects. ALL BUTTONS USE FONT AWESOME ICONS (uniform size & style)
+// @version      5.7
+// @description  ToPack with Sorter6 exception: keep and convert to C999. Modal preview (black theme). Refresh button re-runs picking & extraction. toggleDepotCheckbox + auto-refresh only on modal close. Tab-delimited clipboard copy (GM_setClipboard) & toast. Sticky header fixed, subtle borders, hover effects. ALL BUTTONS USE FONT AWESOME ICONS (uniform size & style). Supports both legacy and Modern (pon-wdws21) page layouts.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
 // @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
@@ -13,6 +13,61 @@
 
 (function() {
 'use strict';
+
+// --------------------------
+// Layout adapter (legacy vs Modern page)
+// --------------------------
+// The Modern page (pon-wdws21 /Modern/) renders the same data as a Bootstrap
+// div grid instead of the legacy table markup, and its drill-down handler
+// ignores untrusted native clicks — rows must be clicked through the page's
+// own jQuery (reached via unsafeWindow since this script runs sandboxed).
+const PAK_MODERN=/\/modern\//i.test(location.pathname);
+const PAK_SEL=PAK_MODERN?{
+    batch:'div.progress-overview-batch',
+    desc:'.progress-overview-description-cell',
+    clickDesc:'.progress-overview-description-cell',
+    total:'.progress-overview-total-cell'
+}:{
+    batch:'div.batch-row[id^="Batch-"]',
+    desc:'.description-column',
+    clickDesc:'div.batch-row-item.description-column',
+    total:'.total-column'
+};
+function pakPageJQ(){
+    try{ if(typeof unsafeWindow!=='undefined' && unsafeWindow.jQuery) return unsafeWindow.jQuery; }catch(e){}
+    return window.jQuery||null;
+}
+// Legacy keeps bar text in a .bar-label child; Modern puts it directly on
+// the .progress-bar segment.
+function pakBarLabel(scope,barClass){
+    if(!scope) return '';
+    const el=PAK_MODERN
+        ? scope.querySelector('.progress-bar.'+barClass)
+        : scope.querySelector('.'+barClass+' .bar-label');
+    return el?el.textContent:'';
+}
+function pakDrillClick(el){
+    if(!el) return;
+    if(!PAK_MODERN){ try{ el.click(); }catch(e){} return; }
+    const row=el.closest('.progress-overview-row')||el;
+    const jq=pakPageJQ();
+    if(jq) jq(row).trigger('click');
+    else{ try{ row.click(); }catch(e){} }
+}
+function pakIsDrillable(el){
+    if(PAK_MODERN) return !!el.closest('.progress-overview-clickable');
+    return getComputedStyle(el).cursor.includes('pointer');
+}
+// Parent area = clickable top-level row. Modern carries nesting depth in
+// --progress-row-level (0 = top); legacy marks children with calc() width.
+function pakIsParentArea(desc){
+    if(PAK_MODERN){
+        const row=desc.closest('.progress-overview-row');
+        const level=row?(parseInt(row.style.getPropertyValue('--progress-row-level'),10)||0):0;
+        return level===0 && pakIsDrillable(desc);
+    }
+    return getComputedStyle(desc).cursor.includes('pointer') && !desc.getAttribute('style')?.includes('calc');
+}
 
 let isRunning = false;
 
@@ -241,13 +296,13 @@ function getRoundedTimeUpHour(){
 // --------------------------
 
 function getTotalsBlock(){
-    const batches=document.querySelectorAll('div.batch-row[id^="Batch-"]');
+    const batches=document.querySelectorAll(PAK_SEL.batch);
     for(const b of batches){
         const bn=b.querySelector('.batchNo');
         if(bn && bn.textContent.trim()==='Totals') return b;
     }
     const alt=[...document.querySelectorAll('div')].find(d=>d.textContent && /\bTotals\b/.test(d.textContent));
-    if(alt) return alt.closest('div.batch-row') || alt.parentElement;
+    if(alt) return alt.closest(PAK_MODERN?'div.progress-overview-batch':'div.batch-row') || alt.parentElement;
     return null;
 }
 
@@ -255,10 +310,10 @@ function clickLabelsInsideTotals(labels){
     const totals=getTotalsBlock();
     if(!totals) return 0;
     let clicked=0;
-    totals.querySelectorAll('div.batch-row-item.description-column').forEach(el=>{
+    totals.querySelectorAll(PAK_SEL.clickDesc).forEach(el=>{
         const txt=el.textContent.trim();
-        if(labels.includes(txt) && getComputedStyle(el).cursor.includes('pointer')){
-            el.click(); clicked++;
+        if(labels.includes(txt) && pakIsDrillable(el)){
+            pakDrillClick(el); clicked++;
         }
     });
     return clicked;
@@ -276,14 +331,14 @@ function clickPicking(){ return clickLabelsInsideTotals(['Picking']); }
 function clickNumericRows(){
     const totals=getTotalsBlock();
     if(!totals) return 0;
-    const numericRows=[...totals.querySelectorAll('.description-column')]
+    const numericRows=[...totals.querySelectorAll(PAK_SEL.desc)]
     .map(el=>{
         const num=Number(el.textContent.trim());
-        return (getComputedStyle(el).cursor.includes('pointer') && !isNaN(num) && num>=1 && num<=999) ? {el,num} : null;
+        return (pakIsDrillable(el) && !isNaN(num) && num>=1 && num<=999) ? {el,num} : null;
     })
     .filter(Boolean)
     .sort((a,b)=>b.num-a.num);
-    numericRows.forEach(r=>r.el.click());
+    numericRows.forEach(r=>pakDrillClick(r.el));
     return numericRows.length;
 }
 
@@ -314,31 +369,30 @@ function extractBatchRows(){
     }
     const data=[];
     let currentParent='';
-    totals.querySelectorAll('.description-column').forEach(desc=>{
+    totals.querySelectorAll(PAK_SEL.desc).forEach(desc=>{
         const text=desc.textContent.trim();
-        const clickable=getComputedStyle(desc).cursor.includes('pointer');
-        if(clickable && !desc.getAttribute('style')?.includes('calc')) currentParent=text;
+        if(pakIsParentArea(desc)) currentParent=text;
         const area=text;
-        const totalElem=desc.parentElement.querySelector('.total-column');
+        const totalElem=desc.parentElement.querySelector(PAK_SEL.total);
         let totalVal=totalElem ? totalElem.innerText.split('\n')[0].trim() : '';
         let completedVal='';
         const isBPP=/^BPP$/i.test(currentParent);
         const isIntl=/Int'?l Packing/i.test(currentParent);
         const isPacking=/^Packing$/i.test(currentParent);
         if(isBPP || isIntl){
-            completedVal=extractNumber(desc.parentElement.querySelector('.progress-complete .bar-label')?.textContent);
+            completedVal=extractNumber(pakBarLabel(desc.parentElement,'progress-complete'));
         }else if(isPacking){
-            completedVal=extractNumber(desc.parentElement.querySelector('.parcels-packed .bar-label')?.textContent, true) || '0';
+            completedVal=extractNumber(pakBarLabel(desc.parentElement,'parcels-packed'), true) || '0';
         }else{
-            completedVal=extractNumber(desc.parentElement.querySelector('.progress-complete .bar-label')?.textContent);
+            completedVal=extractNumber(pakBarLabel(desc.parentElement,'progress-complete'));
         }
-        const allocatedVal=extractNumber(desc.parentElement.querySelector('.progress-allocated .bar-label')?.textContent);
-        const heldVal=extractNumber(desc.parentElement.querySelector('.progress-held .bar-label')?.textContent);
+        const allocatedVal=extractNumber(pakBarLabel(desc.parentElement,'progress-allocated'));
+        const heldVal=extractNumber(pakBarLabel(desc.parentElement,'progress-held'));
         const totalNum=parseInt(totalVal.replace(/,/g,'')) || 0;
         const compNum=parseInt(String(completedVal).replace(/,/g,'')) || 0;
         let outstandingVal='';
         if(isBPP || isIntl){
-            outstandingVal=extractNumber(desc.parentElement.querySelector('.progress-outstanding .bar-label')?.textContent);
+            outstandingVal=extractNumber(pakBarLabel(desc.parentElement,'progress-outstanding'));
         }else{
             outstandingVal=(totalNum-compNum).toLocaleString();
         }

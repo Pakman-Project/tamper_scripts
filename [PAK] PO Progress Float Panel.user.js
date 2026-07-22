@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [PAK] PO Progress Float Panel
 // @namespace    http://tampermonkey.net/
-// @version      7.2
-// @description  Full v7.1 UI with unified icon buttons and a full-screen 38% black overlay while running the Inducting→Picking→Way→Drive sequence. Animated spinner while loading; only auto-click new batches that have Picking+Inducting. Console diagnostics.
+// @version      7.3
+// @description  Full v7.1 UI with unified icon buttons and a full-screen 38% black overlay while running the Inducting→Picking→Way→Drive sequence. Animated spinner while loading; only auto-click new batches that have Picking+Inducting. Console diagnostics. Supports both legacy and Modern (pon-wdws21) page layouts.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
 // @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
@@ -13,6 +13,41 @@
 
 (function () {
   'use strict';
+
+  /* -------------------- LAYOUT ADAPTER (legacy vs Modern page) -------------------- */
+  // The Modern page (pon-wdws21 /Modern/) renders the same data as a Bootstrap
+  // div grid instead of the legacy table markup, and its drill-down handler
+  // ignores untrusted native clicks — rows must be clicked through the page's
+  // own jQuery. Every layout-dependent lookup goes through these helpers.
+  const PAK_MODERN = /\/modern\//i.test(location.pathname);
+  const PAK_SEL = PAK_MODERN ? {
+    batch: 'div.progress-overview-batch',
+    desc: '.progress-overview-description-cell',
+    clickDesc: '.progress-overview-description-cell',
+    total: '.progress-overview-total-cell'
+  } : {
+    batch: 'div.batch-row[id^="Batch-"]',
+    desc: '.description-column',
+    clickDesc: 'div.batch-row-item.description-column',
+    total: '.total-column'
+  };
+  // Legacy keeps the bar text in a .bar-label child; Modern puts it directly
+  // on the .progress-bar segment.
+  function pakBarLabel(scope, barClass) {
+    if (!scope) return '';
+    const el = PAK_MODERN
+      ? scope.querySelector('.progress-bar.' + barClass)
+      : scope.querySelector('.' + barClass + ' .bar-label');
+    return el ? el.textContent : '';
+  }
+  function pakDrillClick(el) {
+    if (!el) return;
+    if (!PAK_MODERN) { try { el.click(); } catch (e) {} return; }
+    const row = el.closest('.progress-overview-row') || el;
+    const jq = window.jQuery;
+    if (jq) jq(row).trigger('click');
+    else { try { row.click(); } catch (e) {} }
+  }
 
   /* -------------------- CONFIG / STYLES -------------------- */
 
@@ -304,12 +339,12 @@
     const subs = SORTER_GROUPS[sorterKey] || [];
     let total = 0, completed = 0;
     subs.forEach(subLabel => {
-      const descSub = Array.from(batchEl.querySelectorAll('.description-column'))
+      const descSub = Array.from(batchEl.querySelectorAll(PAK_SEL.desc))
         .find(el => el.textContent.trim() === subLabel);
       if (!descSub) return;
       const parentSub = descSub.parentElement;
-      const subTotal = extractTotalNumber(parentSub.querySelector('.total-column')?.innerText);
-      const subComplete = extractNumber(parentSub.querySelector('.progress-complete .bar-label')?.textContent);
+      const subTotal = extractTotalNumber(parentSub.querySelector(PAK_SEL.total)?.innerText);
+      const subComplete = extractNumber(pakBarLabel(parentSub, 'progress-complete'));
       total += subTotal;
       completed += subComplete;
     });
@@ -319,7 +354,7 @@
   }
 
   function extractTableData() {
-    const batches = document.querySelectorAll('div.batch-row[id^="Batch-"]');
+    const batches = document.querySelectorAll(PAK_SEL.batch);
     const rows = [];
 
     batches.forEach(batch => {
@@ -342,27 +377,27 @@
         if (area.startsWith('Sorter')) {
           result = extractSorterForBatch(batch, area);
           if (!result) {
-            const desc = Array.from(batch.querySelectorAll('.description-column')).find(el => el.textContent.trim() === area || el.textContent.trim() === DISPLAY_LABELS[area]);
+            const desc = Array.from(batch.querySelectorAll(PAK_SEL.desc)).find(el => el.textContent.trim() === area || el.textContent.trim() === DISPLAY_LABELS[area]);
             if (desc) {
               const parentEl = desc.parentElement;
               let totalNum = 0, completedNum = 0;
-              totalNum = extractTotalNumber(parentEl.querySelector('.total-column')?.innerText);
-              completedNum = extractNumber(parentEl.querySelector('.progress-complete .bar-label')?.textContent);
+              totalNum = extractTotalNumber(parentEl.querySelector(PAK_SEL.total)?.innerText);
+              completedNum = extractNumber(pakBarLabel(parentEl, 'progress-complete'));
               const outstandingNum = Math.max(totalNum - completedNum, 0);
               if (totalNum) result = { percent: Math.round((completedNum / totalNum) * 100), outstanding: outstandingNum.toLocaleString(), total: totalNum, completed: completedNum };
             }
           }
         } else {
-          const desc = Array.from(batch.querySelectorAll('.description-column')).find(el => el.textContent.trim() === area);
+          const desc = Array.from(batch.querySelectorAll(PAK_SEL.desc)).find(el => el.textContent.trim() === area);
           if (desc) {
             const parentEl = desc.parentElement;
             let totalNum = 0, completedNum = 0;
             if (area === 'Packing') {
-              totalNum = extractTotalNumber(parentEl.querySelector('.total-column')?.innerText);
-              completedNum = extractCompletedPacking(parentEl.querySelector('.parcels-packed .bar-label')?.textContent?.trim());
+              totalNum = extractTotalNumber(parentEl.querySelector(PAK_SEL.total)?.innerText);
+              completedNum = extractCompletedPacking(pakBarLabel(parentEl, 'parcels-packed')?.trim());
             } else {
-              totalNum = extractNumber(parentEl.querySelector('.total-column')?.innerText);
-              completedNum = extractNumber(parentEl.querySelector('.progress-complete .bar-label')?.textContent);
+              totalNum = extractNumber(parentEl.querySelector(PAK_SEL.total)?.innerText);
+              completedNum = extractNumber(pakBarLabel(parentEl, 'progress-complete'));
             }
             const outstandingNum = Math.max(totalNum - completedNum, 0);
             if (totalNum) result = { percent: Math.round((completedNum / totalNum) * 100), outstanding: outstandingNum.toLocaleString(), total: totalNum, completed: completedNum };
@@ -595,11 +630,11 @@
   async function clickWithWait(label) {
     console.log(`🔵 [SEQ] Clicking all "${label}"...`);
     // Block screen while running this step (overlay shown at sequence start)
-    const elements = Array.from(document.querySelectorAll('div.batch-row-item.description-column'))
+    const elements = Array.from(document.querySelectorAll(PAK_SEL.clickDesc))
       .filter(el => el.textContent.trim() === label);
 
     elements.forEach(el => {
-      try { el.click(); } catch (e) { console.error(`Error clicking ${label}`, e); }
+      try { pakDrillClick(el); } catch (e) { console.error(`Error clicking ${label}`, e); }
     });
 
     console.log(`⏳ [SEQ] Waiting for stable update (${STEP_STABLE_MS}ms required)...`);
@@ -670,7 +705,7 @@
     try {
       await waitForStableUpdate();
 
-      const batchEls = document.querySelectorAll('div.batch-row[id^="Batch-"] .batchNo');
+      const batchEls = document.querySelectorAll(PAK_SEL.batch + ' .batchNo');
       const currentBatchNos = Array.from(batchEls)
         .map(el => normalizeBatchNo(el.textContent))
         .filter(Boolean);
@@ -689,12 +724,12 @@
         console.log('🆕 New batches detected:', newBatches);
 
         for (const batchNo of newBatches) {
-          const batchEl = Array.from(document.querySelectorAll('div.batch-row'))
+          const batchEl = Array.from(document.querySelectorAll(PAK_SEL.batch))
             .find(el => normalizeBatchNo(el.querySelector('.batchNo')?.textContent) === batchNo);
           if (!batchEl) continue;
 
-          const hasPicking = Array.from(batchEl.querySelectorAll('.description-column')).some(e => e.textContent.trim() === 'Picking');
-          const hasInducting = Array.from(batchEl.querySelectorAll('.description-column')).some(e => e.textContent.trim() === 'Inducting');
+          const hasPicking = Array.from(batchEl.querySelectorAll(PAK_SEL.desc)).some(e => e.textContent.trim() === 'Picking');
+          const hasInducting = Array.from(batchEl.querySelectorAll(PAK_SEL.desc)).some(e => e.textContent.trim() === 'Inducting');
 
           if (!(hasPicking && hasInducting)) {
             console.warn(`⚠️ Batch ${batchNo}: Picking or Inducting missing — not counted as known yet.`);
@@ -708,16 +743,16 @@
 
           // Click Picking + Inducting
           ['Picking', 'Inducting'].forEach(label => {
-            const el = Array.from(batchEl.querySelectorAll('.description-column')).find(e => e.textContent.trim() === label);
-            if (el) { try { el.click(); } catch (e) { console.error('click error', e); } }
+            const el = Array.from(batchEl.querySelectorAll(PAK_SEL.desc)).find(e => e.textContent.trim() === label);
+            if (el) { try { pakDrillClick(el); } catch (e) { console.error('click error', e); } }
           });
 
           await new Promise(res => setTimeout(res, 600));
 
           // Click Way + Drive
           ['Way', 'Drive'].forEach(label => {
-            const el = Array.from(batchEl.querySelectorAll('.description-column')).find(e => e.textContent.trim() === label);
-            if (el) { try { el.click(); } catch (e) { console.error('click error', e); } }
+            const el = Array.from(batchEl.querySelectorAll(PAK_SEL.desc)).find(e => e.textContent.trim() === label);
+            if (el) { try { pakDrillClick(el); } catch (e) { console.error('click error', e); } }
           });
 
           knownBatches.add(batchNo);

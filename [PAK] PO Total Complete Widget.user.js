@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [PAK] PO Total Complete Widget
 // @namespace    http://tampermonkey.net/
-// @version      10.2
-// @description  DBY + Yesterday + Today widget with logging, tooltip, download, today-lock, auto-refresh (per tab), draggable widget, stage click sequence, Google Sheet push. Unified icon buttons + blocking overlay for DBY→Y→T.
+// @version      10.3
+// @description  DBY + Yesterday + Today widget with logging, tooltip, download, today-lock, auto-refresh (per tab), draggable widget, stage click sequence, Google Sheet push. Unified icon buttons + blocking overlay for DBY→Y→T. Supports both legacy and Modern (pon-wdws21) page layouts.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
 // @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
@@ -48,6 +48,21 @@
 
 (function($) {
     'use strict';
+
+    /* -------------------- Layout adapter (legacy vs Modern page) -------------------- */
+    // The Modern page (pon-wdws21 /Modern/) renders the same data as a
+    // Bootstrap div grid instead of the legacy table markup: totals rows are
+    // #endElement-Totals_<Key> instead of #ProgRow-Totals_<Key>-999999999,
+    // bar text sits directly on the .progress-bar segment instead of a
+    // .bar-label child, and drill-down clicks must go through jQuery
+    // .trigger('click') on the row because the page's handler ignores
+    // untrusted native clicks.
+    const PAK_MODERN = /\/modern\//i.test(location.pathname);
+    function pakTotalsBarText($progress, key, barClass) {
+        return PAK_MODERN
+            ? $progress.find('#endElement-Totals_' + key + ' .progress-bar.' + barClass).first().text().trim()
+            : $progress.find('#ProgRow-Totals_' + key + '-999999999 .' + barClass + ' .bar-label').first().text().trim();
+    }
 
     /* -------------------- Load Font Awesome (if missing) -------------------- */
     const FA_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css';
@@ -138,6 +153,16 @@
         return m ? m[0] : "";
     }
     function extractProgressContainer() {
+        if (PAK_MODERN) {
+            // Modern: .batchNo is a div inside .progress-overview-batch-info;
+            // its sibling .progress-overview-batch-rows holds the rows.
+            const $totalsNo = $('.batchNo').filter(function() {
+                return $(this).text().trim()==='Totals';
+            }).first();
+            if (!$totalsNo.length) return null;
+            const $rows = $totalsNo.closest('div.progress-overview-batch').find('.progress-overview-batch-rows').first();
+            return $rows.length ? $rows : null;
+        }
         const $totalsSpan = $('span.batchNo').filter(function() {
             return $(this).text().trim()==='Totals';
         }).first();
@@ -153,13 +178,13 @@
     }
     function extractValuesFromProgress($progress){
         if(!$progress || !$progress.length) return null;
-        const pickRaw = $progress.find('#ProgRow-Totals_Picking-999999999 .progress-complete .bar-label').first().text().trim();
+        const pickRaw = pakTotalsBarText($progress, 'Picking', 'progress-complete');
         const picking = formatOnlyNumberPrefix(pickRaw);
-        const bppRaw = $progress.find('#ProgRow-Totals_BPP-999999999 .progress-complete .bar-label').first().text().trim();
+        const bppRaw = pakTotalsBarText($progress, 'BPP', 'progress-complete');
         const bpp = formatOnlyNumberPrefix(bppRaw);
-        const intlRaw = $progress.find('#ProgRow-Totals_Int_l_Packing-999999999 .progress-complete .bar-label').first().text().trim();
+        const intlRaw = pakTotalsBarText($progress, 'Int_l_Packing', 'progress-complete');
         const intl = formatOnlyNumberPrefix(intlRaw);
-        const packingRaw = $progress.find('#ProgRow-Totals_Packing-999999999 .parcels-packed .bar-label').first().text().trim();
+        const packingRaw = pakTotalsBarText($progress, 'Packing', 'parcels-packed');
         let packing = "";
         if(packingRaw){
             const pm = packingRaw.match(/\(([\d,]+)\)/);
@@ -272,14 +297,25 @@
     const clickDelay={"BPP":20,"Int'l Packing":20,"Packing":20,"Picking":20};
     const pickingRepeatDelay=200;
     function clickSequenceOneByOne($progress){
-        const items=$progress.find("div.batch-row-item.description-column");
+        const items=$progress.find(PAK_MODERN ? '.progress-overview-description-cell' : 'div.batch-row-item.description-column');
         function clickAt(i){
             if(i>=clickSequence.length) return;
             const stage=clickSequence[i];
             items.each(function(){
                 const text=$(this).text().trim();
+                if(text!==stage) return;
+                if(PAK_MODERN){
+                    // Modern: the row is the click target and the page's
+                    // handler ignores untrusted native clicks, so trigger
+                    // through jQuery on the clickable row.
+                    const $row=$(this).closest('.progress-overview-row');
+                    if($row.hasClass('progress-overview-clickable')){
+                        try{ $row.trigger('click'); }catch(e){}
+                    }
+                    return;
+                }
                 const style=window.getComputedStyle(this);
-                if(text===stage && style.cursor==="pointer"){
+                if(style.cursor==="pointer"){
                     try{ this.click(); }catch(e){}
                 }
             });
