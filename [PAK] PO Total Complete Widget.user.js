@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [PAK] PO Total Complete Widget
 // @namespace    http://tampermonkey.net/
-// @version      10.5
+// @version      10.6
 // @description  DBY + Yesterday + Today widget with logging, tooltip, download, today-lock, auto-refresh (per tab), draggable widget, stage click sequence, Google Sheet push. Unified icon buttons + blocking overlay for DBY→Y→T. Auto-detects the legacy vs Modern page layout from the DOM.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
@@ -704,33 +704,69 @@
     // DBY->Y->T sequence that is TODAY's data, which is how DBY ended up
     // holding today's numbers whenever the server was slow.
     //
-    // Every successful redraw calls the page's UpdatedTime(), which rewrites
-    // #last-update-label, so that label is the reload signal. It only has
-    // second resolution, so the grid's own text is used as a second signal in
-    // case a redraw lands inside the same second.
-    function progressReloadStamp() {
-        const label = document.querySelector('#last-update-label');
-        const grid = document.querySelector('#progress-overview-grid');
-        const gridText = grid ? (grid.textContent || '').trim() : '';
-        return {
-            label: label ? label.textContent.trim() : '',
-            rendered: gridText.length > 0,
-            sig: gridText.length
-        };
-    }
-    async function waitForProgressReload(before, timeoutMs = 20000) {
-        const start = Date.now();
-        while (Date.now() - start < timeoutMs) {
-            await delay(100);
-            const now = progressReloadStamp();
-            // Mid-redraw the grid is emptied before it is refilled; ignore that window.
-            if (!now.rendered) continue;
-            if (now.label !== before.label || now.sig !== before.sig) {
-                await delay(300); // let the row fadeIn(250) settle before scraping
-                return true;
-            }
+    // #last-update-label is NOT a safe proxy for "our data arrived". The
+    // page's 30s page-rotation timer also calls UpdatedTime() while
+    // re-rendering the CURRENT day's cached pages, so a rotation tick landing
+    // during the DBY request looked like a successful DBY load and today's
+    // numbers were scraped. The label also only has second resolution.
+    //
+    // loadPost() uses $.ajax, so jQuery raises global ajaxSend/ajaxComplete
+    // events for every ../api/Progress call and the request body carries the
+    // SelectedDate that was asked for. That identifies exactly the response we
+    // triggered. jQuery resolves the .done() handler - which re-renders the
+    // grid - before firing ajaxComplete, so by the time we are notified the
+    // new rows are already in the DOM.
+    function progressRequestDate(settings) {
+        if (!settings || typeof settings.url !== 'string') return null;
+        if (settings.url.indexOf('api/Progress') === -1) return null;
+        try {
+            const body = JSON.parse(settings.data || '{}');
+            return body && body.SelectedDate ? String(body.SelectedDate) : null;
+        } catch (e) {
+            return null;
         }
-        return false;
+    }
+
+    // Resolves:
+    //   'loaded'  - the response for expectedDate arrived and rendered
+    //   'skipped' - no request was issued because the page dedupes identical
+    //               payloads, which means the grid already shows expectedDate
+    //               and is safe to scrape
+    //   'timeout' - nothing usable happened; caller must NOT scrape
+    function waitForDayLoad(expectedDate, timeoutMs = 25000, quietMs = 2500) {
+        return new Promise(resolve => {
+            let done = false;
+            let sawRequest = false;
+            let quietTimer = null;
+            let hardTimer = null;
+
+            function finish(result) {
+                if (done) return;
+                done = true;
+                $(document).off('ajaxSend', onSend).off('ajaxComplete', onComplete);
+                clearTimeout(quietTimer);
+                clearTimeout(hardTimer);
+                resolve(result);
+            }
+            function onSend(evt, jqXHR, settings) {
+                if (progressRequestDate(settings) === expectedDate) sawRequest = true;
+            }
+            function onComplete(evt, jqXHR, settings) {
+                if (progressRequestDate(settings) !== expectedDate) return;
+                setTimeout(() => finish('loaded'), 300); // let fadeIn(250) settle
+            }
+
+            $(document).on('ajaxSend', onSend).on('ajaxComplete', onComplete);
+
+            // The page suppresses a reload when the payload matches the last
+            // completed one, so silence here means the grid is already showing
+            // expectedDate rather than that something went wrong.
+            quietTimer = setTimeout(() => {
+                if (!sawRequest && String($('#ProgressDay').val()) === expectedDate) finish('skipped');
+            }, quietMs);
+
+            hardTimer = setTimeout(() => finish('timeout'), timeoutMs);
+        });
     }
 
     /* ------------------------------------------------------ FULL SEQUENCE: DBY -> Y -> T (async with blocking overlay) ---------------- */
@@ -759,39 +795,41 @@
         }
 
         try {
-            // Each step waits for the grid to actually repaint. On timeout the
-            // previous value is kept rather than recording a number that
-            // belongs to a different day.
+            // Each step waits for the ../api/Progress response that belongs to
+            // the date it selected. On timeout the previous value is kept
+            // rather than recording a number that belongs to a different day.
+            // The option value IS the date (dd/mm/yyyy), which is what the
+            // request body carries, so it doubles as the correlation key.
+            const dbDate = String(dbOpt.val());
             showBlockingOverlay('Loading DBY (Day Before) — please wait...');
-            let stamp = progressReloadStamp();
-            $sel.val(dbOpt.val()).trigger('change');
-            if (await waitForProgressReload(stamp)) {
+            $sel.val(dbDate).trigger('change');
+            if (await waitForDayLoad(dbDate) !== 'timeout') {
                 const $p_db = extractProgressContainer();
                 if ($p_db) dayBeforeValues = extractValuesFromProgress($p_db) || dayBeforeValues;
             } else {
-                console.warn('[TCW] DBY did not reload in time — keeping previous DBY values instead of scraping another day.');
+                console.warn('[TCW] DBY (' + dbDate + ') did not load in time — keeping previous DBY values instead of scraping another day.');
             }
 
+            const yDate = String(yOpt.val());
             showBlockingOverlay('Loading Yesterday — please wait...');
-            stamp = progressReloadStamp();
-            $sel.val(yOpt.val()).trigger('change');
-            if (await waitForProgressReload(stamp)) {
+            $sel.val(yDate).trigger('change');
+            if (await waitForDayLoad(yDate) !== 'timeout') {
                 const $p_y = extractProgressContainer();
                 if ($p_y) yesterdayValues = extractValuesFromProgress($p_y) || yesterdayValues;
             } else {
-                console.warn('[TCW] Yesterday did not reload in time — keeping previous Yesterday values.');
+                console.warn('[TCW] Yesterday (' + yDate + ') did not load in time — keeping previous Yesterday values.');
             }
 
+            const tDate = String(tOpt.val());
             showBlockingOverlay('Loading Today — please wait...');
-            stamp = progressReloadStamp();
-            $sel.val(tOpt.val()).trigger('change');
-            const todayReloaded = await waitForProgressReload(stamp);
+            $sel.val(tDate).trigger('change');
+            const todayLoaded = await waitForDayLoad(tDate) !== 'timeout';
             const $p_t = extractProgressContainer();
             if ($p_t) {
-                if (todayReloaded) {
+                if (todayLoaded) {
                     todayValues = extractValuesFromProgress($p_t) || todayValues;
                 } else {
-                    console.warn('[TCW] Today did not reload in time — keeping previous Today values; the observer will pick up the next redraw.');
+                    console.warn('[TCW] Today (' + tDate + ') did not load in time — keeping previous Today values; the observer will pick up the next redraw.');
                 }
                 // Attach either way so live updates are still tracked.
                 attachSafeObserverToProgress($p_t);
@@ -825,12 +863,12 @@
             async function tryLoad(idx, assign) {
                 const opt=opts.eq(idx);
                 if(!opt.length) return;
-                const stamp=progressReloadStamp();
-                $sel.val(opt.val()).trigger('change');
-                // Wait for the actual repaint; a blind delay can scrape the
-                // previously displayed day (see waitForProgressReload).
-                if(!await waitForProgressReload(stamp)){
-                    console.warn('[TCW] fallback: day index '+idx+' did not reload in time — value left unchanged.');
+                const date=String(opt.val());
+                $sel.val(date).trigger('change');
+                // Wait for the response belonging to this date; a blind delay
+                // can scrape the previously displayed day (see waitForDayLoad).
+                if(await waitForDayLoad(date)==='timeout'){
+                    console.warn('[TCW] fallback: '+date+' did not load in time — value left unchanged.');
                     return;
                 }
                 const $p=extractProgressContainer();
