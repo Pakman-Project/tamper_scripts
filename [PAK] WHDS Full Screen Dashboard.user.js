@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [PAK] WHDS Full Screen Dashboard
 // @namespace    http://tampermonkey.net/
-// @version      3.7
-// @description  Added color dots to stacked bar legends. Combined card view for bars. Supports both legacy and Modern (pon-wdws21) page layouts.
+// @version      3.8
+// @description  Added color dots to stacked bar legends. Combined card view for bars. Auto-detects the legacy vs Modern page layout from the DOM.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
 // @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
@@ -16,13 +16,26 @@
     'use strict';
 
     // --- Layout adapter (legacy vs Modern page) ---
-    // The Modern page (pon-wdws21 /Modern/) renders the same data as a
-    // Bootstrap div grid instead of the legacy table markup. All layout-
-    // dependent selectors go through these constants.
-    const PAK_MODERN = /\/modern\//i.test(location.pathname);
-    const PAK_BATCH_SEL = PAK_MODERN ? 'div.progress-overview-batch' : '.batch-row';
-    const PAK_ROW_SEL = PAK_MODERN ? '.progress-overview-row' : '.progress-row, .packing-row';
-    const PAK_DESC_SEL = PAK_MODERN ? '.progress-overview-description-cell' : '.description-column';
+    // The Modern page renders the same data as a Bootstrap div grid instead
+    // of the legacy table markup. All layout-dependent selectors go through
+    // these helpers.
+    //
+    // The layout is detected from the DOM, not the URL: whds-batchoverviewprogress
+    // was upgraded in place and now serves the Modern markup at /Batch/, so a
+    // path test mis-classifies it as legacy. #progress-overview-grid ships in
+    // the partial that is injected into #aisles via AJAX, so the answer is
+    // latched only once real markup exists; until then assume Modern.
+    let pakModernCache = null;
+    function pakIsModern() {
+        if (pakModernCache !== null) return pakModernCache;
+        if (document.querySelector('#progress-overview-grid, .progress-overview-row')) return (pakModernCache = true);
+        if (document.querySelector('.bar-label, div.batch-row[id^="Batch-"]')) return (pakModernCache = false);
+        return true;
+    }
+    // Resolved on every call so the layout can still be settled after load.
+    function pakBatchSel() { return pakIsModern() ? 'div.progress-overview-batch' : '.batch-row'; }
+    function pakRowSel() { return pakIsModern() ? '.progress-overview-row' : '.progress-row, .packing-row'; }
+    function pakDescSel() { return pakIsModern() ? '.progress-overview-description-cell' : '.description-column'; }
 
     // State
     let pakActiveFilter = null;
@@ -601,7 +614,7 @@
     function pakGetSegmentLabel(element) {
         // Modern puts the label text directly on the .progress-bar segment;
         // legacy keeps it in a .bar-label child.
-        if (PAK_MODERN) return (element.innerText || '').trim();
+        if (pakIsModern()) return (element.innerText || '').trim();
         const label = element.querySelector('.bar-label');
         return label ? label.innerText.trim() : '';
     }
@@ -609,12 +622,12 @@
     // A segment only counts if it's a real bar inside the stacked progress
     // strip (excludes the strip container itself and layout wrappers).
     function pakIsBarSegment(seg) {
-        if (PAK_MODERN) return seg.parentElement.classList.contains('progress-overview-stacked');
+        if (pakIsModern()) return seg.parentElement.classList.contains('progress-overview-stacked');
         return seg.parentElement.classList.contains('main-bar-column') || seg.parentElement.classList.contains('packing-row-item');
     }
 
     function pakGetRowSegments(row) {
-        return PAK_MODERN
+        return pakIsModern()
             ? row.querySelectorAll('.progress-bar')
             : row.querySelectorAll('[class*="progress"], [class*="parcels"], [class*="effort"]');
     }
@@ -642,7 +655,7 @@
             controlsArea.style.display = 'none';
         }
 
-        const originalBatches = document.querySelectorAll(PAK_BATCH_SEL);
+        const originalBatches = document.querySelectorAll(pakBatchSel());
         if (originalBatches.length === 0) return;
 
         let totalsBatch = null;
@@ -679,12 +692,12 @@
                 const batchTime = batchDateEl ? batchDateEl.innerText.replace(/[\r\n]+/g, ' ').trim() : '';
                 const isTotals = batchNum.includes('Totals');
 
-                const progressRows = batchRow.querySelectorAll(PAK_ROW_SEL);
+                const progressRows = batchRow.querySelectorAll(pakRowSel());
                 let rowSegments = [];
 
                 progressRows.forEach(row => {
                     if (row.style.display === 'none' || row.classList.contains('template')) return;
-                    const descEl = row.querySelector(PAK_DESC_SEL);
+                    const descEl = row.querySelector(pakDescSel());
                     const areaName = descEl ? descEl.textContent.trim() : 'Unknown';
 
                     if (pakActiveFilter && areaName.toLowerCase() === pakActiveFilter.toLowerCase()) {
@@ -785,13 +798,13 @@
                     ? 'pak-tv-batch-card pak-totals-card'
                     : 'pak-tv-batch-card';
 
-                const progressRows = batchRow.querySelectorAll(PAK_ROW_SEL);
+                const progressRows = batchRow.querySelectorAll(pakRowSel());
                 let targetRowHtml = '';
                 let hasTargetRow = false;
 
                 progressRows.forEach(row => {
                     if (row.style.display === 'none' || row.classList.contains('template')) return;
-                    const descEl = row.querySelector(PAK_DESC_SEL);
+                    const descEl = row.querySelector(pakDescSel());
                     const areaName = descEl ? descEl.textContent.trim() : 'Unknown';
 
                     if (pakActiveFilter && areaName.toLowerCase() !== pakActiveFilter.toLowerCase()) {

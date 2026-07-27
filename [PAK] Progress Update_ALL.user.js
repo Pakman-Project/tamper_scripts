@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         [PAK] Progress Update_ALL
 // @namespace    http://tampermonkey.net/
-// @version      1.17
-// @description  Auto click batch stages, Drive groups, Sorters, numeric rows 1-999, export batch details CSV, overlay with copy/download/close/refresh. Dark themed overlay, improved clipboard handling. Refresh updates overlay table + TSV (clipboard) + CSV (download) in sync. All buttons unified (Font Awesome icons, fixed size, consistent hover/focus). Supports both legacy and Modern (pon-wdws21) page layouts.
+// @version      1.18
+// @description  Auto click batch stages, Drive groups, Sorters, numeric rows 1-999, export batch details CSV, overlay with copy/download/close/refresh. Dark themed overlay, improved clipboard handling. Refresh updates overlay table + TSV (clipboard) + CSV (download) in sync. All buttons unified (Font Awesome icons, fixed size, consistent hover/focus). Auto-detects the legacy vs Modern page layout from the DOM.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
 // @match        http://pon-wdws21:8087/Modern/Batch/ProgressOverview
@@ -17,24 +17,45 @@
     // --------------------------
     // Layout adapter (legacy vs Modern page)
     // --------------------------
-    // The Modern page (pon-wdws21 /Modern/) renders the same data as a
-    // Bootstrap div grid instead of the legacy table markup, and its
-    // drill-down handler ignores untrusted native clicks — rows must be
-    // clicked through the page's own jQuery (reached via unsafeWindow since
-    // this script runs sandboxed). All layout-dependent lookups go through
-    // these helpers.
-    const PAK_MODERN = /\/modern\//i.test(location.pathname);
-    const PAK_SEL = PAK_MODERN ? {
-        batch: 'div.progress-overview-batch',
-        desc: '.progress-overview-description-cell',
-        total: '.progress-overview-total-cell',
-        totalsDespatchRow: '#endElement-Totals_Despatch'
-    } : {
-        batch: 'div.batch-row[id^="Batch-"]',
-        desc: '.batch-row-item.description-column',
-        total: '.total-column',
-        totalsDespatchRow: '#ProgRow-Totals_Despatch-999999999'
+    // The Modern page renders the same data as a Bootstrap div grid instead
+    // of the legacy table markup, and its drill-down handler ignores
+    // untrusted native clicks — rows must be clicked through the page's own
+    // jQuery (reached via unsafeWindow since this script runs sandboxed).
+    // All layout-dependent lookups go through these helpers.
+    //
+    // The layout is detected from the DOM, not the URL: whds-batchoverviewprogress
+    // was upgraded in place and now serves the Modern markup at /Batch/, so a
+    // path test mis-classifies it as legacy. #progress-overview-grid ships in
+    // the partial that is injected into #aisles via AJAX, so the answer is
+    // latched only once real markup exists; until then assume Modern.
+    let pakModernCache = null;
+    function pakIsModern() {
+        if (pakModernCache !== null) return pakModernCache;
+        if (document.querySelector('#progress-overview-grid, .progress-overview-row')) return (pakModernCache = true);
+        if (document.querySelector('.bar-label, div.batch-row[id^="Batch-"]')) return (pakModernCache = false);
+        return true;
+    }
+    const PAK_SEL_SETS = {
+        modern: {
+            batch: 'div.progress-overview-batch',
+            desc: '.progress-overview-description-cell',
+            total: '.progress-overview-total-cell',
+            totalsDespatchRow: '#endElement-Totals_Despatch'
+        },
+        legacy: {
+            batch: 'div.batch-row[id^="Batch-"]',
+            desc: '.batch-row-item.description-column',
+            total: '.total-column',
+            totalsDespatchRow: '#ProgRow-Totals_Despatch-999999999'
+        }
     };
+    // Resolved on every read so the layout can still be settled after load.
+    const PAK_SEL = {};
+    Object.keys(PAK_SEL_SETS.modern).forEach(function (key) {
+        Object.defineProperty(PAK_SEL, key, {
+            get: function () { return (pakIsModern() ? PAK_SEL_SETS.modern : PAK_SEL_SETS.legacy)[key]; }
+        });
+    });
     function pakPageJQ() {
         try { if (typeof unsafeWindow !== 'undefined' && unsafeWindow.jQuery) return unsafeWindow.jQuery; } catch (e) {}
         return window.jQuery || null;
@@ -43,27 +64,27 @@
     // directly on the .progress-bar segment.
     function pakBarLabel(scope, barClass) {
         if (!scope) return '';
-        const el = PAK_MODERN
+        const el = pakIsModern()
             ? scope.querySelector('.progress-bar.' + barClass)
             : scope.querySelector('.' + barClass + ' .bar-label');
         return el ? el.textContent : '';
     }
     function pakDrillClick(el) {
         if (!el) return;
-        if (!PAK_MODERN) { try { el.click(); } catch (e) {} return; }
+        if (!pakIsModern()) { try { el.click(); } catch (e) {} return; }
         const row = el.closest('.progress-overview-row') || el;
         const jq = pakPageJQ();
         if (jq) jq(row).trigger('click');
         else { try { row.click(); } catch (e) {} }
     }
     function pakIsDrillable(el) {
-        if (PAK_MODERN) return !!el.closest('.progress-overview-clickable');
+        if (pakIsModern()) return !!el.closest('.progress-overview-clickable');
         return ((el.style.cursor || getComputedStyle(el).cursor) || '') === 'pointer';
     }
     // Parent area = clickable top-level row. Modern carries nesting depth in
     // --progress-row-level (0 = top); legacy marks children with calc() width.
     function pakIsParentArea(desc) {
-        if (PAK_MODERN) {
+        if (pakIsModern()) {
             const row = desc.closest('.progress-overview-row');
             const level = row ? (parseInt(row.style.getPropertyValue('--progress-row-level'), 10) || 0) : 0;
             return level === 0 && pakIsDrillable(desc);
@@ -367,7 +388,7 @@
         console.log(`Clicked ${count} Sorter items`);
     }
     function isTotalsRow(el) {
-        if (PAK_MODERN) {
+        if (pakIsModern()) {
             const b = el.closest('div.progress-overview-batch');
             return !!b && (b.querySelector('.batchNo')?.textContent.trim() === 'Totals');
         }
@@ -537,7 +558,7 @@
     function findTotalsDespatchEl() {
         const targetRow = document.querySelector(PAK_SEL.totalsDespatchRow);
         if (!targetRow) return null;
-        if (PAK_MODERN) {
+        if (pakIsModern()) {
             return targetRow.classList.contains('progress-overview-clickable')
                 ? (targetRow.querySelector('.progress-overview-description-cell') || targetRow)
                 : null;
@@ -812,7 +833,7 @@
                 } else {
                     // fallback scoped flow for the batch under the target progress row
                     const maybeBatchNo = (() => {
-                        if (PAK_MODERN) {
+                        if (pakIsModern()) {
                             const row = document.querySelector(PAK_SEL.totalsDespatchRow);
                             const b = row ? row.closest('div.progress-overview-batch')?.querySelector('.batchNo') : null;
                             return b ? b.textContent.trim() : null;
