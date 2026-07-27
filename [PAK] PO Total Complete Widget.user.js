@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [PAK] PO Total Complete Widget
 // @namespace    http://tampermonkey.net/
-// @version      10.4
+// @version      10.5
 // @description  DBY + Yesterday + Today widget with logging, tooltip, download, today-lock, auto-refresh (per tab), draggable widget, stage click sequence, Google Sheet push. Unified icon buttons + blocking overlay for DBY→Y→T. Auto-detects the legacy vs Modern page layout from the DOM.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
@@ -695,6 +695,44 @@
         obs.observe(target,{childList:true,subtree:true,characterData:true});
     }
 
+    /* ------------------------------------------------------ RELOAD SYNCHRONISATION ------------------------------------------------------ */
+    // Changing #ProgressDay does NOT repaint the grid synchronously. The page
+    // debounces the change by 150ms, rebuilds the Batch/Depot/Client selects,
+    // aborts any in-flight request, then POSTs ../api/Progress and only
+    // redraws #progress-overview-grid when that returns. A blind delay
+    // therefore scrapes whatever is still on screen — at the start of the
+    // DBY->Y->T sequence that is TODAY's data, which is how DBY ended up
+    // holding today's numbers whenever the server was slow.
+    //
+    // Every successful redraw calls the page's UpdatedTime(), which rewrites
+    // #last-update-label, so that label is the reload signal. It only has
+    // second resolution, so the grid's own text is used as a second signal in
+    // case a redraw lands inside the same second.
+    function progressReloadStamp() {
+        const label = document.querySelector('#last-update-label');
+        const grid = document.querySelector('#progress-overview-grid');
+        const gridText = grid ? (grid.textContent || '').trim() : '';
+        return {
+            label: label ? label.textContent.trim() : '',
+            rendered: gridText.length > 0,
+            sig: gridText.length
+        };
+    }
+    async function waitForProgressReload(before, timeoutMs = 20000) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            await delay(100);
+            const now = progressReloadStamp();
+            // Mid-redraw the grid is emptied before it is refilled; ignore that window.
+            if (!now.rendered) continue;
+            if (now.label !== before.label || now.sig !== before.sig) {
+                await delay(300); // let the row fadeIn(250) settle before scraping
+                return true;
+            }
+        }
+        return false;
+    }
+
     /* ------------------------------------------------------ FULL SEQUENCE: DBY -> Y -> T (async with blocking overlay) ---------------- */
     async function runFullSequenceOriginal() {
         if (isAutoRefreshEnabled()) {
@@ -721,24 +759,41 @@
         }
 
         try {
+            // Each step waits for the grid to actually repaint. On timeout the
+            // previous value is kept rather than recording a number that
+            // belongs to a different day.
             showBlockingOverlay('Loading DBY (Day Before) — please wait...');
+            let stamp = progressReloadStamp();
             $sel.val(dbOpt.val()).trigger('change');
-            await delay(1000);
-            const $p_db = extractProgressContainer();
-            if ($p_db) dayBeforeValues = extractValuesFromProgress($p_db) || dayBeforeValues;
+            if (await waitForProgressReload(stamp)) {
+                const $p_db = extractProgressContainer();
+                if ($p_db) dayBeforeValues = extractValuesFromProgress($p_db) || dayBeforeValues;
+            } else {
+                console.warn('[TCW] DBY did not reload in time — keeping previous DBY values instead of scraping another day.');
+            }
 
             showBlockingOverlay('Loading Yesterday — please wait...');
+            stamp = progressReloadStamp();
             $sel.val(yOpt.val()).trigger('change');
-            await delay(1000);
-            const $p_y = extractProgressContainer();
-            if ($p_y) yesterdayValues = extractValuesFromProgress($p_y) || yesterdayValues;
+            if (await waitForProgressReload(stamp)) {
+                const $p_y = extractProgressContainer();
+                if ($p_y) yesterdayValues = extractValuesFromProgress($p_y) || yesterdayValues;
+            } else {
+                console.warn('[TCW] Yesterday did not reload in time — keeping previous Yesterday values.');
+            }
 
             showBlockingOverlay('Loading Today — please wait...');
+            stamp = progressReloadStamp();
             $sel.val(tOpt.val()).trigger('change');
-            await delay(1000);
+            const todayReloaded = await waitForProgressReload(stamp);
             const $p_t = extractProgressContainer();
             if ($p_t) {
-                todayValues = extractValuesFromProgress($p_t) || todayValues;
+                if (todayReloaded) {
+                    todayValues = extractValuesFromProgress($p_t) || todayValues;
+                } else {
+                    console.warn('[TCW] Today did not reload in time — keeping previous Today values; the observer will pick up the next redraw.');
+                }
+                // Attach either way so live updates are still tracked.
                 attachSafeObserverToProgress($p_t);
             }
 
@@ -770,8 +825,14 @@
             async function tryLoad(idx, assign) {
                 const opt=opts.eq(idx);
                 if(!opt.length) return;
+                const stamp=progressReloadStamp();
                 $sel.val(opt.val()).trigger('change');
-                await delay(800);
+                // Wait for the actual repaint; a blind delay can scrape the
+                // previously displayed day (see waitForProgressReload).
+                if(!await waitForProgressReload(stamp)){
+                    console.warn('[TCW] fallback: day index '+idx+' did not reload in time — value left unchanged.');
+                    return;
+                }
                 const $p=extractProgressContainer();
                 if($p){
                     const v=extractValuesFromProgress($p);
