@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [PAK] PO Total Complete Widget
 // @namespace    http://tampermonkey.net/
-// @version      10.6
+// @version      10.7
 // @description  DBY + Yesterday + Today widget with logging, tooltip, download, today-lock, auto-refresh (per tab), draggable widget, stage click sequence, Google Sheet push. Unified icon buttons + blocking overlay for DBY→Y→T. Auto-detects the legacy vs Modern page layout from the DOM.
 // @author       Pak
 // @match        http://whds-batchoverviewprogress:8087/Batch/ProgressOverview
@@ -202,6 +202,58 @@
             packing = pm ? pm[1] : formatOnlyNumberPrefix(packingRaw);
         }
         return { picking, packing, intl, bpp, container:$progress };
+    }
+
+    // "Response arrived" is not the same as "the screen shows the totals".
+    // ShowTopLevel() only renders one page of up to 50 batch groups at a time
+    // and the Totals group sorts LAST, so on a busy day Totals is not on screen
+    // when the response lands - it only appears once the page's 30s rotation
+    // timer reaches the final page. The response itself always carries every
+    // group, so read the totals from it and keep the DOM as a fallback.
+    function valuesFromResponse(data) {
+        if (!data || !Array.isArray(data.TopLevelProgress)) return null;
+        const byId = {};
+        data.TopLevelProgress.forEach(group => {
+            if (!Array.isArray(group)) return;
+            group.forEach(row => {
+                if (row && typeof row.id === 'string' && row.id.indexOf('Totals_') === 0) byId[row.id] = row;
+            });
+        });
+        if (!Object.keys(byId).length) return null;
+        // Mirror what the bars render: FormatProgressValue() is
+        // Number(v || 0).toLocaleString(); picking/bpp/intl take the Done
+        // segment, and packing takes ItemsPacked (the bracketed figure).
+        const fmt = (row, field) => (row && row[field] !== undefined && row[field] !== null)
+            ? Number(row[field] || 0).toLocaleString()
+            : "";
+        return {
+            picking: fmt(byId['Totals_Picking'], 'Done'),
+            packing: fmt(byId['Totals_Packing'], 'ItemsPacked'),
+            intl: fmt(byId['Totals_Int_l_Packing'], 'Done'),
+            bpp: fmt(byId['Totals_BPP'], 'Done'),
+            container: null
+        };
+    }
+
+    // Fallback path: wait for the Totals group to actually be rendered and
+    // carry a figure instead of scraping whatever is on screen right now.
+    async function waitForTotalsRendered(timeoutMs = 8000) {
+        const start = Date.now();
+        for (;;) {
+            const $p = extractProgressContainer();
+            if ($p) {
+                const vals = extractValuesFromProgress($p);
+                if (vals && (vals.picking || vals.packing || vals.intl || vals.bpp)) return vals;
+            }
+            if (Date.now() - start >= timeoutMs) return null;
+            await delay(200);
+        }
+    }
+
+    // Prefer the response body; fall back to the rendered grid (which is all
+    // that is available when the page deduped the request and issued none).
+    async function readDayValues(result) {
+        return valuesFromResponse(result.data) || await waitForTotalsRendered();
     }
 
     function getDayValues(dayKey) {
@@ -740,20 +792,23 @@
             let quietTimer = null;
             let hardTimer = null;
 
-            function finish(result) {
+            function finish(status, data) {
                 if (done) return;
                 done = true;
                 $(document).off('ajaxSend', onSend).off('ajaxComplete', onComplete);
                 clearTimeout(quietTimer);
                 clearTimeout(hardTimer);
-                resolve(result);
+                resolve({ status: status, data: data || null });
             }
             function onSend(evt, jqXHR, settings) {
                 if (progressRequestDate(settings) === expectedDate) sawRequest = true;
             }
             function onComplete(evt, jqXHR, settings) {
                 if (progressRequestDate(settings) !== expectedDate) return;
-                setTimeout(() => finish('loaded'), 300); // let fadeIn(250) settle
+                // Keep the parsed body: it holds every batch group, including
+                // Totals, whether or not the grid is showing that page.
+                const payload = jqXHR && jqXHR.responseJSON ? jqXHR.responseJSON : null;
+                setTimeout(() => finish('loaded', payload), 300); // let fadeIn(250) settle
             }
 
             $(document).on('ajaxSend', onSend).on('ajaxComplete', onComplete);
@@ -762,10 +817,10 @@
             // completed one, so silence here means the grid is already showing
             // expectedDate rather than that something went wrong.
             quietTimer = setTimeout(() => {
-                if (!sawRequest && String($('#ProgressDay').val()) === expectedDate) finish('skipped');
+                if (!sawRequest && String($('#ProgressDay').val()) === expectedDate) finish('skipped', null);
             }, quietMs);
 
-            hardTimer = setTimeout(() => finish('timeout'), timeoutMs);
+            hardTimer = setTimeout(() => finish('timeout', null), timeoutMs);
         });
     }
 
@@ -803,9 +858,11 @@
             const dbDate = String(dbOpt.val());
             showBlockingOverlay('Loading DBY (Day Before) — please wait...');
             $sel.val(dbDate).trigger('change');
-            if (await waitForDayLoad(dbDate) !== 'timeout') {
-                const $p_db = extractProgressContainer();
-                if ($p_db) dayBeforeValues = extractValuesFromProgress($p_db) || dayBeforeValues;
+            const dbResult = await waitForDayLoad(dbDate);
+            if (dbResult.status !== 'timeout') {
+                const vals = await readDayValues(dbResult);
+                if (vals) dayBeforeValues = vals;
+                else console.warn('[TCW] DBY (' + dbDate + ') loaded but its Totals never became readable — keeping previous DBY values.');
             } else {
                 console.warn('[TCW] DBY (' + dbDate + ') did not load in time — keeping previous DBY values instead of scraping another day.');
             }
@@ -813,9 +870,11 @@
             const yDate = String(yOpt.val());
             showBlockingOverlay('Loading Yesterday — please wait...');
             $sel.val(yDate).trigger('change');
-            if (await waitForDayLoad(yDate) !== 'timeout') {
-                const $p_y = extractProgressContainer();
-                if ($p_y) yesterdayValues = extractValuesFromProgress($p_y) || yesterdayValues;
+            const yResult = await waitForDayLoad(yDate);
+            if (yResult.status !== 'timeout') {
+                const vals = await readDayValues(yResult);
+                if (vals) yesterdayValues = vals;
+                else console.warn('[TCW] Yesterday (' + yDate + ') loaded but its Totals never became readable — keeping previous Yesterday values.');
             } else {
                 console.warn('[TCW] Yesterday (' + yDate + ') did not load in time — keeping previous Yesterday values.');
             }
@@ -823,17 +882,17 @@
             const tDate = String(tOpt.val());
             showBlockingOverlay('Loading Today — please wait...');
             $sel.val(tDate).trigger('change');
-            const todayLoaded = await waitForDayLoad(tDate) !== 'timeout';
-            const $p_t = extractProgressContainer();
-            if ($p_t) {
-                if (todayLoaded) {
-                    todayValues = extractValuesFromProgress($p_t) || todayValues;
-                } else {
-                    console.warn('[TCW] Today (' + tDate + ') did not load in time — keeping previous Today values; the observer will pick up the next redraw.');
-                }
-                // Attach either way so live updates are still tracked.
-                attachSafeObserverToProgress($p_t);
+            const tResult = await waitForDayLoad(tDate);
+            if (tResult.status !== 'timeout') {
+                const vals = await readDayValues(tResult);
+                if (vals) todayValues = vals;
+                else console.warn('[TCW] Today (' + tDate + ') loaded but its Totals never became readable — keeping previous Today values.');
+            } else {
+                console.warn('[TCW] Today (' + tDate + ') did not load in time — keeping previous Today values; the observer will pick up the next redraw.');
             }
+            // Attach regardless so live updates are still tracked.
+            const $p_t = extractProgressContainer();
+            if ($p_t) attachSafeObserverToProgress($p_t);
 
             updateWidget();
             addLogLine();
@@ -867,15 +926,14 @@
                 $sel.val(date).trigger('change');
                 // Wait for the response belonging to this date; a blind delay
                 // can scrape the previously displayed day (see waitForDayLoad).
-                if(await waitForDayLoad(date)==='timeout'){
+                const result=await waitForDayLoad(date);
+                if(result.status==='timeout'){
                     console.warn('[TCW] fallback: '+date+' did not load in time — value left unchanged.');
                     return;
                 }
-                const $p=extractProgressContainer();
-                if($p){
-                    const v=extractValuesFromProgress($p);
-                    if(v) assign(v);
-                }
+                const v=await readDayValues(result);
+                if(v) assign(v);
+                else console.warn('[TCW] fallback: '+date+' Totals never became readable — value left unchanged.');
             }
             await tryLoad(dbIndex,v=>dayBeforeValues=v);
             await tryLoad(yIndex,v=>yesterdayValues=v);
