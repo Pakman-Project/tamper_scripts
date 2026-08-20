@@ -41,15 +41,39 @@
         'MPF - VS Online': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbweReN_J5GfBmYARYzwcQUJdKIBm7LlvhDB5ZnQzBQq6n5ItBo5CpOIEeIomooK3PPnzA/exec'
     };
 
-    const REPORT_POST_URLS_BACKFILL = {
-        'D.Analysis - OSR PiE': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbwUatgWaCOfsdPiHLV-WgTRN_CqJH9P4eHE7V0ONgQnYU1xoNXIDV4fb1oz8-RJioIF/exec',
-        'D.Analysis - OSR Topup': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbwUatgWaCOfsdPiHLV-WgTRN_CqJH9P4eHE7V0ONgQnYU1xoNXIDV4fb1oz8-RJioIF/exec',
-        'D.Analysis - E3 Packing': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbwUatgWaCOfsdPiHLV-WgTRN_CqJH9P4eHE7V0ONgQnYU1xoNXIDV4fb1oz8-RJioIF/exec',
-        'D.Analysis - Parcel Sortation': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbwUatgWaCOfsdPiHLV-WgTRN_CqJH9P4eHE7V0ONgQnYU1xoNXIDV4fb1oz8-RJioIF/exec',
-        'D.Analysis - Parcel Induct': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbwUatgWaCOfsdPiHLV-WgTRN_CqJH9P4eHE7V0ONgQnYU1xoNXIDV4fb1oz8-RJioIF/exec',
-        'D.Analysis - Inbound Decanting': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbwUatgWaCOfsdPiHLV-WgTRN_CqJH9P4eHE7V0ONgQnYU1xoNXIDV4fb1oz8-RJioIF/exec',
-        'D.Analysis - OSR Decanting': 'https://script.google.com/a/macros/next.co.uk/s/AKfycbwUatgWaCOfsdPiHLV-WgTRN_CqJH9P4eHE7V0ONgQnYU1xoNXIDV4fb1oz8-RJioIF/exec'
-    };
+    // Every "D.Analysis - *" backfill report posts to the SAME endpoint: the
+    // versioned public deployment of the Elmsall Live Productivity script, which
+    // also serves the dashboard itself. Naming the URL once means adding a work
+    // area is a one-line change and nineteen copies cannot drift apart.
+    //
+    // This list must stay in step with the Databricks notebook "Elmsall Live
+    // Productivity - Backfill Mode" (its `reports` list, same order). A report
+    // missing from here still RUNS and still saves locally - it just never gets
+    // posted, which looks exactly like the report working while the data quietly
+    // fails to arrive. audit_pipeline.js now checks the two agree.
+    const BACKFILL_POST_URL = 'https://script.google.com/a/macros/next.co.uk/s/AKfycbwUatgWaCOfsdPiHLV-WgTRN_CqJH9P4eHE7V0ONgQnYU1xoNXIDV4fb1oz8-RJioIF/exec';
+
+    const REPORT_POST_URLS_BACKFILL = Object.fromEntries([
+        'D.Analysis - OSR PiE',
+        'D.Analysis - OSR Topup',
+        'D.Analysis - E3 Packing',
+        'D.Analysis - Parcel Induct',
+        'D.Analysis - Parcel Sortation',
+        'D.Analysis - Inbound Decanting',
+        'D.Analysis - OSR Decanting',
+        'D.Analysis - BCR Inducting',
+        'D.Analysis - E1/E2 Inducting',
+        'D.Analysis - Sorter 6 Packing',
+        'D.Analysis - Online Picking - Drive',
+        'D.Analysis - Online Picking - Way',
+        'D.Analysis - Online Picking - E3',
+        'D.Analysis - E3 BPP',
+        'D.Analysis - E1/E2 BPP',
+        'D.Analysis - RSPS Top Up',
+        'D.Analysis - RSPS Pick',
+        'D.Analysis - ISPS Top Up',
+        'D.Analysis - ISPS Pick',
+    ].map(name => [name, BACKFILL_POST_URL]));
 
     const FIXED_COLS = 10;
     const TAB_TEXT = 'SAVED REPORTS';
